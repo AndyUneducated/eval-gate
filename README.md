@@ -36,7 +36,22 @@ make db-up
 
 # 3. Run tests
 make test
+
+# 4. Try the multi-axis gate against demo fixtures
+uv run python scripts/seed_demo.py
+uv run evalgate gate \
+  --baseline examples/fixtures/baseline.json \
+  --candidate examples/fixtures/candidate.json
+# exit 0 = gate passed, exit 1 = regression detected (used by CI)
 ```
+
+## CI gate
+
+The `eval-gate` workflow runs on every PR: it seeds demo eval records, calls
+`evalgate gate`, uploads the JSON report as an artifact, comments the four-axis
+table on the PR, and fails the check if any axis regresses with a
+statistically significant delta. Swap the seeded fixtures for real
+baseline / candidate eval outputs to wire the gate against your own pipeline.
 
 ## Development
 

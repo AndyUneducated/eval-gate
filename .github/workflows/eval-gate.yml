@@ -1,0 +1,93 @@
+name: eval-gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: eval-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Seed demo eval data
+        run: uv run python scripts/seed_demo.py
+
+      - name: Run multi-axis gate
+        id: gate
+        continue-on-error: true
+        run: |
+          uv run evalgate gate \
+            --baseline examples/fixtures/baseline.json \
+            --candidate examples/fixtures/candidate.json \
+            --out gate-report.json
+
+      - name: Upload gate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-gate-report
+          path: gate-report.json
+
+      - name: Comment report on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('gate-report.json', 'utf8'));
+            const status = report.passed ? 'PASS' : 'FAIL';
+            const fmt = (x) => (x === null || x === undefined ? '—' : Number(x).toFixed(4));
+            const rows = report.axes.map((a) => {
+              const ci = a.ci_low !== null && a.ci_low !== undefined
+                ? `[${fmt(a.ci_low)}, ${fmt(a.ci_high)}]`
+                : '—';
+              return `| ${a.name} | ${fmt(a.baseline)} | ${fmt(a.candidate)} | ${fmt(a.delta)} | ${ci} | ${a.significant ? 'yes' : 'no'} | ${a.passed ? 'pass' : 'fail'} |`;
+            });
+            const tagRows = Object.entries(report.attribution || {}).map(
+              ([tag, v]) => `| ${tag} | ${fmt(v.baseline)} | ${fmt(v.candidate)} | ${fmt(v.delta)} | ${v.n_candidate} |`
+            );
+            const body = [
+              `### EvalGate report: **${status}**`,
+              '',
+              '| axis | baseline | candidate | delta | bootstrap CI (95%) | significant | result |',
+              '|---|---|---|---|---|---|---|',
+              ...rows,
+              '',
+              tagRows.length ? '#### Tag attribution' : '',
+              tagRows.length ? '| tag | baseline | candidate | delta | n |' : '',
+              tagRows.length ? '|---|---|---|---|---|' : '',
+              ...tagRows,
+              '',
+              report.summary || '',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Enforce gate outcome
+        if: steps.gate.outcome != 'success'
+        run: |
+          echo "EvalGate failed — see report comment / artifact." >&2
+          exit 1
