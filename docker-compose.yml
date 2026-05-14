@@ -16,5 +16,18 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: .
+    container_name: evalgate-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://evalgate:evalgate@db:5432/evalgate
+      LOG_LEVEL: INFO
+      ENV: docker
+    ports:
+      - "8000:8000"
+
 volumes:
   evalgate-pgdata:

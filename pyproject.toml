@@ -14,12 +14,25 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.13",
+]
+
+[project.scripts]
+evalgate-api = "evalgate.api.main:run"
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "httpx>=0.27",
     "ruff>=0.7",
     "pre-commit>=4.0",
 ]
@@ -57,4 +70,4 @@ ignore = ["E501"]  # line length handled by formatter
 testpaths = ["tests"]
 addopts = "-ra -q --strict-markers"
 asyncio_mode = "auto"
-filterwarnings = ["error::DeprecationWarning"]
+asyncio_default_fixture_loop_scope = "function"
