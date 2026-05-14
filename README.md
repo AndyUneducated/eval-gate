@@ -23,7 +23,16 @@ and **blocks merges** when a four-axis gate trips:
 Regressions are attributed by `tag` / `intent` so the report says
 *"billing intent dropped 8 pts"* instead of *"pass rate dropped 0.5%"*.
 
-> **Status**: walking skeleton — see [`docs/design.md`](docs/design.md) for the roadmap.
+> **Status**: multi-axis CI gate v1 shipped (fixtures-driven). Real OTel ingest + judge runner up next.
+
+## Project docs
+
+| File | What's in it |
+|---|---|
+| [`docs/design.md`](docs/design.md) | Long-form product + tech spec — single source of truth for features, architecture, trade-offs. Read this first. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phased execution plan (~1 person-day per phase). Tracks `[DONE]` / `[NEXT]` / `[TODO]`. |
+| [`DECISIONS.md`](DECISIONS.md) | ADR-style log of every load-bearing technical decision (why OTel, why PG+JSONB, why kill prompt UI, ...). |
+| [`JOURNAL.md`](JOURNAL.md) | Reverse-chrono milestone log — one paragraph per shipped phase. |
 
 ## Quickstart
 
