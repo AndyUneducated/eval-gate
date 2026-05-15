@@ -7,7 +7,7 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：14 个 phase，3 已完成 / 11 待办 ≈ 11 人天 vibe coding 后达到 design.md 描述的完整形态。
+> **总体节奏**：14 个 phase，5 已完成 / 9 待办 ≈ 9 人天 vibe coding 后达到 design.md 描述的完整形态。
 
 ---
 
@@ -31,29 +31,35 @@
 
 ---
 
-## Phase 3 · OTel 端到端打通 + Trace 浏览 API   [NEXT]
+## Phase 3 · OTel 端到端打通 + Trace 浏览 API   [DONE]
 
 - **目标**：装上 OTel SDK 的真实 demo app 把 span 推到 EvalGate，DB 里能查到，REST API 能 list/detail。
-- **交付**：
-  - `examples/demo_app/`：一个最小的 Python LLM 应用（用 OpenAI 或 LiteLLM stub），通过 `opentelemetry-instrumentation-*` 自动产 span，OTLP HTTP exporter 推到 EvalGate。
-  - `POST /v1/otel/traces` 走标准 OTLP/HTTP protobuf 解析（或先做 JSON 接入），落库到 `traces` + `spans` 两表。
-  - `GET /v1/traces?limit=...&since=...` + `GET /v1/traces/{trace_id}` 列表 / 详情接口。
-  - 对应单测 + 一个 `make demo-trace` 一键演示脚本。
-- **退出标准**：`make demo-trace` 跑完，`curl /v1/traces` 看到刚才那条；CI 全绿。
-- **预估**：1 天。
+- **已交付**：
+  - `examples/demo_app/`：最小 Python LLM 流程（`litellm` + `mock_response`，零 API key），手写 OTel SDK + `OTLPSpanExporter` 推到 `/v1/otel/traces`。
+  - `POST /v1/otel/traces` 同时接 `application/x-protobuf`（OTel SDK 默认）和 `application/json`（curl 调试友好），解析后落库 `traces` + `spans` 两表，幂等。
+  - `GET /v1/traces?limit=&since=&service=` 分页列表 + `GET /v1/traces/{trace_id}` 完整 span tree 详情。
+  - 持久化层 `ingest/persistence.py` 抽出 SQLite/PG 双方言的 `INSERT ... ON CONFLICT`；`traces` 汇总按 spans 表实时重算（replay 不会双计）。
+  - 7 个新单测（protobuf ingest、JSON ingest、idempotency、list/detail、404）+ 现有 endpoint 测试改成真断言 DB 状态。
+  - 测试用 aiosqlite in-memory engine fixture（`tests/conftest.py`），CI 不依赖 Postgres。
+  - `make demo-trace`：起 DB → migrate → 启 API → 跑 demo → curl 列表 → 清理。
+- **commit**：（待 commit；本地端到端 demo 已验证：3 span trace 推上去，list/detail 都返回正确 payload）
+- **决策对齐**：完整落地 ADR-001（OTLP wire）+ ADR-002（PG/JSONB/Alembic）。
+- **详细技术方案**：见 [docs/PHASE_3_PLAN.md](./PHASE_3_PLAN.md)。
 
-## Phase 4 · Eval Set Manager   [TODO]
+## Phase 4 · Eval Set Manager   [DONE]
 
 - **目标**：能把任何一条 case（来自 trace 或手工）"加入 eval set"，并按 tag 组织。
-- **交付**：
-  - DB schema：`eval_set`、`eval_case`（含 `input`、`expected`、`tags[]`、`source_trace_id`、`task_type`：`rag` / `agent` / `generic`）+ Alembic migration。
-  - REST：`POST /v1/eval-sets`、`POST /v1/eval-sets/{id}/cases`、`POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`、`GET /v1/eval-sets/{id}`。
-  - CLI：`evalgate eval-set add --from-trace <id> --tag billing`。
-  - tag taxonomy 用最简单的 free-form `text[]`，先不做强约束。
-- **退出标准**：能从 Phase 3 的 trace 一键 promote 出 5 条 case 进 eval set，REST 能列出。
-- **预估**：1 天。
+- **已交付**：
+  - DB schema：`eval_sets`、`eval_cases`（`input` / `expected` / `tags`(JSONB list) / `source_trace_id`(软引用) / `source_span_id` / `task_type` enum: rag / agent / generic）+ 0003 Alembic migration + FK CASCADE。
+  - REST：`POST /v1/eval-sets`、`GET /v1/eval-sets`、`GET /v1/eval-sets/{id_or_name}`、`POST /v1/eval-sets/{id}/cases`、`POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`。
+  - CLI：`evalgate eval-set create / add / show`（直连 DB，`--set` 接 UUID 或 name）。
+  - 抽 case 策略：从 trace 找第一个 LLM span（`evalgate.kind=llm` OR 任意 `gen_ai.*` attribute），把 prompt → `case.input`、response → `case.expected`；`task_type` 按 trace 里是否有 retriever / 多个 tool span 启发式推断。
+  - 24 个新单测（pure function + REST + CLI + 404/422 路径），全部跑在 aiosqlite fixture 上不依赖 docker。
+  - 退出标准：本地 promote 5 trace → 5 case，REST + CLI 都返回正确 payload。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_4_PLAN.md](./PHASE_4_PLAN.md)。
 
-## Phase 5 · Generic LLM-as-Judge Runner v1（LiteLLM）   [TODO]
+## Phase 5 · Generic LLM-as-Judge Runner v1（LiteLLM）   [NEXT]
 
 - **目标**：给一个 eval set + 一个 prompt（候选版本），跑 judge 出结果。
 - **交付**：

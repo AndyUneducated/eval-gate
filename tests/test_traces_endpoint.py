@@ -22,6 +22,13 @@ async def test_ingest_traces_accepts_simple_span(client: AsyncClient) -> None:
     body = resp.json()
     assert body == {"accepted": 1, "trace_ids": ["t1"]}
 
+    # Verify persistence — the same trace must be visible via the browse API.
+    detail = await client.get("/v1/traces/t1")
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["span_count"] == 1
+    assert detail_body["spans"][0]["name"] == "chat"
+
 
 async def test_ingest_traces_rejects_empty(client: AsyncClient) -> None:
     resp = await client.post("/v1/traces", json={"spans": []})

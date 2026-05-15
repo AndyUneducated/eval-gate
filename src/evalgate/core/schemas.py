@@ -49,11 +49,44 @@ class Trace(BaseModel):
 
 class EvalCase(BaseModel):
     id: UUID = Field(default_factory=uuid4)
-    task_kind: TaskKind = TaskKind.generic
+    task_type: TaskKind = TaskKind.generic
     input: dict[str, Any]
     expected: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    source_trace_id: str | None = None
+    source_span_id: str | None = None
+    created_at: datetime | None = None
+
+
+class EvalSetOut(BaseModel):
+    """API response shape for an eval_set row (without its cases)."""
+
+    id: str
+    name: str
+    description: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvalCaseOut(BaseModel):
+    """API response shape for an eval_case row."""
+
+    id: str
+    eval_set_id: str
+    task_type: TaskKind
+    input: dict[str, Any]
+    expected: dict[str, Any] | None = None
+    tags: list[str] = Field(default_factory=list)
+    source_trace_id: str | None = None
+    source_span_id: str | None = None
+    created_at: datetime
+
+
+class EvalSetDetail(EvalSetOut):
+    """Set + its cases, returned by `GET /v1/eval-sets/{id}`."""
+
+    cases: list[EvalCaseOut] = Field(default_factory=list)
 
 
 class JudgeScore(BaseModel):
