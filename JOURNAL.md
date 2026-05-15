@@ -8,6 +8,135 @@
 
 ---
 
+## 2026-05-15 · Phase 4.5 · `EvalCaseRow.eval_set_id` 下线（彻底归一到 memberships）
+
+7.5 之后再做一次自审：`EvalCaseRow.eval_set_id`（Phase 4 N:1）和 `EvalCaseSetMembershipRow`（Phase 7.5 N:N）并存是「两套真理」。原因之一就是「为了 Phase 4 / 5 / 6 一行不改」的保留策略——这是典型的 backward-compat 妥协。这一阶段把它彻底改干净：case 是纯 payload，membership 是唯一的「case 属于哪些 set」之处。
+
+- 新 migration [0007](src/evalgate/db/migrations/versions/0007_drop_eval_case_eval_set_id.py)：先 backfill 每一行 `EvalCaseRow.eval_set_id` 进 `eval_case_set_memberships`（dedup 已有），再 `batch_alter_table` 删 index + column。`downgrade()` 反向走，取 oldest membership 当 primary 还原，可逆。
+- ORM：`EvalCaseRow.eval_set_id` 字段消失；docstring 重写「payload-only」。
+- `eval_set/repository.add_case[_from_trace]` 同一事务里加一条 membership（`promoted_from_result_id=NULL, strategy=NULL`）——"originating membership" 与 "promoted membership" 结构同源，差别只在元数据列。
+- `list_cases(set_id)` 简化成单 JOIN（删了 Phase 7.5 的 union + dedup 那 10 行）。
+- `badcase/repository.promote_result_to_set`：`SameSetPromotionError` 整类删除——「promote 进原始 set」结构上就是「往已经存在的 (case, set) 写第二次」，统一回落到 `AlreadyPromotedError`（HTTP 409）。少一类错误码，semantic 反而更清。
+- 对外契约：`EvalCaseOut`（`GET /v1/eval-sets/{id}` cases 数组、`POST .../cases`、`POST .../cases/from-trace`）的 `eval_set_id` 字段被删。container 是 set、payload 是 case、归属关系单独通过「列 set 看 case」或 `PromotionOut` 表达——三种 shape 不再混着塞同一个字段里。
+
+几个值得记的设计抉择：
+
+1. **Migration 顺序：先 backfill 再 drop**。如果反过来 PG 会 FK violation；migration 里手工读 + bulk_insert，跳过已有 (case, set) 来兼容 dev 环境里跑过半的中间态。
+2. **`downgrade()` 真的写了**：取该 case 最早一条 membership.created_at 作为 primary set——这跟 Phase 4 的原意（"originating set"）严格一致；下线一个表得真的能滚回去，否则就是写死。
+3. **`SameSetPromotionError` 一并删掉**：保留它就只是在 wrapping `AlreadyPromotedError` 给一个"更友好的"名字。Phase 4.5 之后 origin 跟 destination 在数据模型上没区别，特殊错误就是噪音；HTTP 409 + 消息「already a member」对调用方足够。
+4. **Test 改写策略**：`tests/test_badcase_*` 里手工 seed `EvalCaseRow(eval_set_id=...)` 的 3 个 fixture 全改走 `set_repo.add_case`（即生产路径），顺手把测试也变成 add_case 的覆盖；`test_promote_into_origin_set_is_already_promoted` 替掉 `test_promote_same_set_rejected` —— 同样的不变量，更通用的错误。
+5. **零运行时性能损失**：原 union 双查 + 应用 dedup 替成单 JOIN，prod 查询 plan 还更简单。
+
+**Test**：lint clean，**123 passed**（同 7.5 后基线），Phase 7 smoke 端到端跑通（10 case → run → uncertainty 3 → promote → target set 看到 3 case）。
+
+**详细方案**：plan 内联进 [docs/PHASE_7_PLAN.md](docs/PHASE_7_PLAN.md) 的「Phase 4.5 收尾」附录。
+**Commit**: 待 commit。
+
+## 2026-05-15 · Phase 7.5 · promote 改 many-to-many membership 表（cleanliness refactor）
+
+补一个 Phase 7 自审时识别的设计债：原 promote 直接复制 `EvalCaseRow` 进 target set（受 Phase 4 N:1 `eval_set_id` 限制），三个问题：payload 重复、lineage 只能 tags 字符串软追溯、同 case 二次 promote 没结构性 dedup。这次彻底改干净（Phase 4.5 后续又把 `eval_set_id` 列从 `EvalCaseRow` 整体下线，参见下文）：
+
+- 新表 [`eval_case_set_memberships`](src/evalgate/db/migrations/versions/0006_create_eval_case_memberships.py)（0006 migration）：`(eval_case_id, eval_set_id)` 唯一约束 + `promoted_from_result_id` + `strategy` + `tags` + `created_at`
+- `EvalCaseRow.eval_set_id` 语义保留为「原始/主集」——**Phase 4 / 5 / 6 一行代码不改**
+- `eval_set/repository.list_cases(set_id)` 改成「主集行 ∪ membership 行」去重 union；Phase 5 runner 不知不觉就能迭代到 promoted 进来的 case
+- `badcase/repository.promote_result_to_set(...)` 重写：不再 copy case，只 insert 一条 membership；新增 `AlreadyPromotedError` → HTTP 409 + CLI rc=1
+- API 响应模型从 `EvalCaseOut` 换成 [`PromotionOut`](src/evalgate/core/schemas.py)，暴露 membership 元数据（client 想拿 case payload 走 `GET /v1/eval-sets/{set_id}`）
+
+几个值得记的取舍：
+
+1. **保留 `EvalCaseRow.eval_set_id` 不删**：是「原始集」语义而不是 backward-compat 妥协——`add_case_from_trace` / `get_eval_set_detail` / Phase 4 一堆查询都用它。删了得动 4 个文件，加了得 1 个 SQL union + 5 行 dedup，权衡明显。
+2. **`list_cases` 用应用层 union 而不是 SQL `UNION`**：跨 SQLite（aiosqlite test）+ Postgres（prod）一份代码，避免方言细节，5 条 case 量级根本无所谓 perf。
+3. **API 是 breaking 的（仅 Phase 7 路径）**：promote 响应从 case 字段集变成 membership 字段集；这是有意的，因为 Phase 7.5 之前的 `EvalCaseOut` 返回值在新模型里已经语义错位（旧 case 还在 src set，"返回的 case_id" 概念模糊）。Phase 1–6 完全不沾这条 API 路径。
+4. **结构性 dedup > application dedup**：`UniqueConstraint(case, set)` 是真理来源，application 层在 commit 前先 SELECT 一次只是为了拿到友好错误消息——不靠它做正确性。
+5. **Membership tags 与 case.tags 解耦**：原 Phase 7 把 `badcase:strategy:<s>` 塞进 `EvalCaseRow.tags`（修改了 case 本身），Phase 7.5 改成 `EvalCaseSetMembershipRow.strategy` 列 + `tags` 列——case 是 case，promote 元数据是元数据。
+
+**Test 变更**：原 19 个 Phase 7 测试中 7 个改写（字段名换成 membership shape），新增 5 个（`already_promoted` 在 repo / router / CLI 三层 + `list_cases(target)` 看到 promoted case + `GET /v1/eval-sets/{dst}` 同样可见）。**Phase 1–6 全套测试零修改**。`make test`：**123 passed**，lint clean，smoke 跑通。
+
+**Tech**: SQLAlchemy `UniqueConstraint`、双 FK CASCADE、JSON tags 列同时支持 PG JSONB + SQLite JSON 回退、Pydantic v2 `PromotionOut` DTO。
+
+**详细方案**：[docs/PHASE_7_PLAN.md](docs/PHASE_7_PLAN.md) 文末「Phase 7.5 后置 refactor」段。
+**Commit**: 待 commit。
+
+## 2026-05-15 · Phase 7 · BadCase Finder（uncertainty + outlier + llm + promote）
+
+把 Phase 6 写到 `eval_results.judge_confidence` / `latency_ms` / `cost_usd` 的信号变成可执行动作：扫 `eval_results` 自动捞最值得入 eval_set 的 case，CLI / REST 一行 promote 复制到目标 set，构建越用越准的回归基线。整套**零新表**——Phase 5/6 早就把列预留好了，Phase 7 只是把它们当 active-learning 的输入用起来。
+
+新增 [src/evalgate/badcase/](src/evalgate/badcase/) 两件套（`finder.py` 三策略 + `repository.py` promote）、REST 端点 `GET /v1/badcases?strategy=...` + `POST /v1/badcases/{id}/promote`、CLI 子命令 `evalgate badcase list / promote`、smoke 脚本 [scripts/phase7_badcase_smoke.py](scripts/phase7_badcase_smoke.py)。三种策略：
+
+| Strategy | 排序逻辑 | 直觉 |
+|---|---|---|
+| `uncertainty` | `judge_confidence ASC NULLS LAST` | judge 越不确定 → 越值得人工 review |
+| `outlier`     | `score=0 ∨ safety ∨ latency>p95 ∨ cost>p95`，severity = 命中条件数 | 已知坏 + 长尾 |
+| `llm`         | 先取 2×limit uncertainty 候选 → cheap model 二筛 "subtle_bad" | active learning 漏斗 |
+
+几个值得记的设计取舍：
+
+1. **不加新表**：Phase 7 全是 SELECT，LLM 标签也不缓存。决策清晰度 > 性能微优化；Phase 17 calibration 真要复用 LLM 标签再加 `bad_case_labels`。
+2. **Promote 走"复制 EvalCaseRow"而不是"多对多挂"**：`EvalCaseRow.eval_set_id` 保持 N:1，避免新建 join 表 + 改写 Phase 4 一堆 list/filter；source set 的快照不被污染。Lineage 通过 tags 弱耦合（`badcase:source-case:<id>` + `badcase:strategy:<s>`），跟 Phase 4 `source_trace_id` 的"软引用"哲学一致。
+3. **同 set promote 显式拒绝（`SameSetPromotionError` → HTTP 409）**：防呆——同 set 复制是 no-op anti-pattern，硬报错胜过 silently 创建重复数据。
+4. **`p95` 数据稀疏防呆（`MIN_FOR_PERCENTILE=4`）**：少于 4 行时跳 percentile 判定，只看 `score=0 / safety`。p95 在 n=3 上没统计意义，强行算反而把 outlier 标准化掉。
+5. **LLM 策略的 prompt 用 `{{...}}` 转义 JSON 大括号**：踩过坑——Python `str.format` 会把示例 JSON 里的 `{"subtle_bad":...}` 当占位符报 `KeyError`，本来想直接用 f-string 但保留模板灵活性，最后用了 `{{}}` 转义。
+6. **`acompletion_json` 复用 Phase 6 的 protocol 层**：cheap model 调用不另搞一套 litellm 壳，直接借用——judge 的失败兜底（不向上 raise、parse 不到给 fallback）也跟着继承。
+
+**Smoke 真跑**（mock 模式）：10 条 billing case → mock judge → `find(strategy="uncertainty", limit=3)` 拿 3 条 → 三连 promote → target set `phase7-hard` 落 3 条新 case。退出码 0、闭环跑通。
+
+**Tech**: `numpy.percentile`（已是 dep）、SQLAlchemy `select` + ORDER BY、Pydantic `BadCaseOut`（API contract）、`asyncio.run` + `AsyncSession` 测试夹具一致复用。
+
+**Test 数量**：原 99 + 新 19 (`finder` 5 + `promote` 5 + `routers` 5 + `cli` 4) = **118 全绿**。lint clean。
+
+**详细方案**：[docs/PHASE_7_PLAN.md](docs/PHASE_7_PLAN.md)
+**Commit**: 待 commit。
+
+## 2026-05-14 · Phase 6 · Judge Robustness（MultiJudge × PositionSwap × SelfConsistency）
+
+Phase 5 是 1 judge × 1 次 × 1 角度。Phase 6 把它升级成「N judge × K self-consistency × P=2 position swap」的三层包装栈。每条 case 最多 `N×K×P` 次 judge 调用，每一次都落新表 `eval_judge_calls`（0005 migration），上层用 `judge_confidence`（per-judge std + cross-judge std 两层）告诉 gate「这个 case 我自己有多确定」。
+
+**真实数据**（本机 Ollama，5 条 billing case，每条带 reference，N=3 次重复）：
+
+| Config | Mean per-case score stdev |
+|---|---|
+| single_pointwise（1 judge, K=1, temp=0.7） | **0.0377** |
+| multi_pairwise（2 judges 7B+32B, K=3, swap on） | **0.0136** |
+
+多层栈把跨次评分波动压到 **1/2.8**，符合 MT-Bench / G-Eval 论文的方向预期。完整数字与 yaml 见 [scripts/phase6_variance.py](scripts/phase6_variance.py) + [examples/prompts/{single_pointwise,multi_pairwise}.yaml](examples/prompts/)。
+
+**Breaking change**（明确选择不向后兼容）：
+
+1. **`prompt.yaml` 改 `judges: [...] + judge_policy:`**：删 Phase 5 的单数 `judge:`，loader 直接 `ValidationError` 报错并给迁移示例。一刀切，把"两种 schema 同时存在"的二次复杂度消灭掉。
+2. **拆 `RubricJudge` 为 `PointwiseJudge` + `PairwiseJudge`**：原文件删；共享 litellm 壳 + 解析层抽到 [protocol.py](src/evalgate/judge/protocol.py)。pairwise 不输出 0..1 score（只出 winner: A|B|tie），0/0.5/1 由 `PositionSwapJudge` 聚合 — 把"绝对分"和"相对偏好"两种语义彻底隔离。
+3. **`eval_judge_calls` 一行一次原始调用**：N×K×P 行/case 全落库，Phase 14 算 κ、Phase 17 算 ECE 直接 SQL，不再回放 judge。`eval_results.judge_confidence` 真填了，gate / BadCase 现在可用。
+4. **`case.expected` 在 pairwise 模式下硬必需**：缺失 → emit `error=True, error_kind="missing_reference"` 的 EvalRecord，**不静默 fallback 到 pointwise**。失败显式可见，胜过埋雷。
+5. **Confidence 公式两层乘**：`per_judge_conf = 1 - std/0.5`（self-consistency 内部稳定度）× `cross_term = 1 - cross_std/0.5`（judge 间一致度）。两层都满 → 1.0；任一层崩 → 接近 0.0。最大 std=0.5 来自分数 ∈[0,1] 的几何上界，让 confidence ∈[0,1] 直接可解释。
+
+栈的拓扑：`Runner → MultiJudge(N) → SelfConsistencyJudge(K) → PositionSwapJudge(P) → PointwiseJudge | PairwiseJudge`，单 case 内 `N×K×P` 次走 `asyncio.gather + Semaphore(concurrency)`，跨 case 仍然顺序（保留 Phase 16 stream）。Temperature 自动 bump：K>1 且用户没设 → 强制 ≥0.7（K=1 不动），否则 greedy decoding 让方差信号塌成 0，confidence 公式失效。
+
+**Tech**: Pydantic v2 `model_validator(mode="before")` 拦截 legacy 字段、`statistics.pstdev` 做总体方差、`asyncio.Semaphore` 限速、`response_format={"type":"json_object"}` 提示 JSON 输出、SQLAlchemy ORM + JSONB on PG / JSON fallback on SQLite。
+
+**Test 数量**：原 19 + 新 7 (`pointwise / pairwise / position_swap / self_consistency / multi_judge / judge_calls_persistence / runner_multi_judge`) = **99 全绿**。lint clean。Phase 5 三个测试文件 + Phase 5 candidate test 一并迁移到新 schema。
+
+**详细方案**：[docs/PHASE_6_PLAN.md](docs/PHASE_6_PLAN.md)
+**Commit**: 待 commit。
+
+## 2026-05-14 · Phase 5 · LLM-as-Judge Runner v1（LiteLLM + 本地 Ollama）
+
+把 Phase 4 攒下的 eval_set 真正"跑起来"。新增 [src/evalgate/judge/](src/evalgate/judge/) 五件套（`prompt_spec` / `candidate` / `rubric_judge` / `persistence` / `runner`），加 `evalgate run --eval-set X --prompt p.yaml --out r.json` CLI 子命令，落两张新表 `eval_runs` / `eval_results`（0004 migration），输出 JSON 直接喂 Phase 2 的 `evalgate gate`。本地用 **qwen2.5:7b（Ollama）** 真跑通：3 条 billing case，baseline vs candidate 两次 run，4 轴 gate 报告齐活，候选弱化 prompt 让 latency_p95 从 12.7s 掉到 1.3s，验证了 latency 轴的真信号。
+
+几个值得记的设计取舍：
+
+1. **Rubric 放进 `prompt.yaml`，不进 eval_set**：评分标准跟候选 prompt 一起在 git 里 diff，避免在 DB 里维护"通用 rubric"的复杂度。
+2. **Runner 写成 `iter_eval` 流式 + `run_eval` 薄包装**：Phase 16 Sequential Gate 直接消费 stream 做 early-stop，无需重构。
+3. **`EvalResultRow` 预留 `judge_confidence` + `judge_raw`**：Phase 17 Calibration 重算 ECE 不需要重跑 judge、不需要再发 migration。
+4. **`EvalRecord` 落到 `core/schemas.py` 当固化契约**：Phase 18 Shadow Mode 的 `/v1/shadow/observe` 直接 import 复用，不会出现字段名漂移。
+5. **CLI 加 `--mock` + `EVALGATE_MOCK_LLM=1` 环境变量**：CI / pytest 走 mock 不烧外部 API；本地默认真调 Ollama。`litellm.completion_cost` 对 `ollama/*` 没定价会 raise，wrapper fallback 0.0 不炸。
+6. **Judge 解析三层兜底**：`json.loads` → regex `r'score\s*(?:[:=]|\bis\b)\s*([0-9.]+)'` → 全失败给 score=0 + reason 存原文。**绝不向上抛**，一条 case 失败不污染整个 run。
+
+整套加完 19 个新测试（prompt_spec / rubric_judge / candidate / runner / runner→gate 端到端 / CLI 端到端），全部走 aiosqlite + `litellm.mock_response`，CI 完全离线。
+
+**Tech**: LiteLLM `acompletion` + `completion_cost`、Pydantic v2 `model_copy` 做 spec override、`asyncio` + `AsyncIterator` 流式 runner、Ollama qwen2.5:7b、sha256 prompt hash 做审计指纹、`litellm.suppress_debug_info` 压广告横幅以净化 CLI stdout。
+
+**详细方案**：[docs/PHASE_5_PLAN.md](docs/PHASE_5_PLAN.md)
+**Commit**: 待 commit。
+
 ## 2026-05-14 · Phase 4 · Eval Set Manager
 
 落地"trace → eval_case"的语义桥。两张新表（`eval_sets` + `eval_cases`，0003 migration），5 个 REST 端点，3 个 CLI 子命令（`create` / `add` / `show`），核心是 [src/evalgate/ingest/case_extract.py](src/evalgate/ingest/case_extract.py) 这个纯函数：从一条 trace 的所有 span 里挑**第一个 LLM span**（`evalgate.kind=llm` OR 任意 `gen_ai.*` attribute），把 prompt → `case.input`、response → `case.expected`，剩下的 sibling span 用来推断 `task_type`（有 retriever → rag，多个 tool → agent，否则 generic）。

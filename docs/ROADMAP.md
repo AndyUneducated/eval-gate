@@ -7,7 +7,7 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：14 个 phase，5 已完成 / 9 待办 ≈ 9 人天 vibe coding 后达到 design.md 描述的完整形态。
+> **总体节奏**：14 个 phase（8 已完成 / 6 待办 ≈ 6 人天）达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
 
 ---
 
@@ -28,8 +28,6 @@
 - **目标**：CLI `evalgate gate` 跑通，PR 上能看到四轴报告 + tag 归因。
 - **已交付**：`build_gate_report` 把 baseline/candidate JSON 算成 4 轴 metric（quality / cost / latency_p95 / safety）+ bootstrap diff CI + tag-wise attribution + GitHub Actions 自动评论 PR + 失败时阻塞 merge + demo seeder（在 billing tag 上注入 regression）。
 - **commit**：`be3a749 feat(gate): end-to-end multi-axis CI gate with bootstrap CI + tag attribution`
-
----
 
 ## Phase 3 · OTel 端到端打通 + Trace 浏览 API   [DONE]
 
@@ -59,42 +57,49 @@
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_4_PLAN.md](./PHASE_4_PLAN.md)。
 
-## Phase 5 · Generic LLM-as-Judge Runner v1（LiteLLM）   [NEXT]
+## Phase 5 · Generic LLM-as-Judge Runner v1（LiteLLM）   [DONE]
 
 - **目标**：给一个 eval set + 一个 prompt（候选版本），跑 judge 出结果。
-- **交付**：
-  - 集成 `litellm`（默认 `gpt-4o-mini` Judge），写 `RubricJudge`：input + output → `score ∈ [0,1]` + `reason`。
-  - `evalgate run --eval-set <id> --prompt path/to/prompt.yaml --out result.json`，输出格式直接喂给 Phase 2 的 `evalgate gate`。
-  - 把结果落库到 `eval_run` + `eval_result` 两表。
-  - 单测用 `litellm` 的 mock / record-replay（避免 CI 真调外部 API）。
-- **退出标准**：能跑 baseline 和 candidate 两次，结果直接喂 `evalgate gate` 出报告。**第一次拿掉 fixtures，跑真实数据。**
-- **预估**：1 天。
+- **已交付**：
+  - `src/evalgate/judge/`：`prompt_spec` / `candidate` / `rubric_judge` / `persistence` / `runner` 五件套；`RubricJudge` 三层解析（JSON → regex → score=0 兜底）。
+  - `evalgate run --eval-set X --prompt p.yaml --out r.json [--judge-model ...] [--mock] [--limit N]`，输出 JSON 字段对齐 Phase 2 `gate` 入参。
+  - 两张新表 `eval_runs` / `eval_results` + 0004 migration；`judge_confidence` + `judge_raw` 字段为 Phase 17 Calibration 预留。
+  - `core/schemas.py` 加 `EvalRecord` pydantic model 固化 gate / shadow（Phase 18）的字段契约。
+  - 19 个新测试（72/72 全绿）：prompt_spec、rubric_judge、candidate、runner、runner→gate 端到端、CLI 端到端，全部走 aiosqlite + `mock_response`。
+  - 本地 demo（真实 Ollama qwen2.5:7b，无 fixtures）：3 条 billing case，baseline vs candidate 两次 run → 4 轴 gate 报告齐全，latency_p95 12.7s → 1.3s 体现弱化 prompt 的真信号。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_5_PLAN.md](./PHASE_5_PLAN.md)。
 
-## Phase 6 · Judge Robustness（cross-vote + position-swap + self-consistency）   [TODO]
+## Phase 6 · Judge Robustness（cross-vote + position-swap + self-consistency）   [DONE]
 
 - **目标**：把 design.md 决策 2 的"四件套"中的去偏 + 降方差落地。
 - **交付**：
-  - `MultiJudge`：把 N 个 sub-judge（如 `gpt-4o-mini` + `claude-3-5-sonnet`）的结果聚合 → `(mean_score, confidence, votes)`。
-  - `PositionSwapJudge` wrapper：A/B 比较时互换两次取一致才接受。
-  - Self-consistency：每条 case 跑 K=3 次取多数票 + 输出 `confidence`。
-  - `evalgate run --judge multi --k 3` 启用。
-  - 复现实验脚本：同一 eval set 用单 judge vs multi judge 各跑 5 次，把方差对比写到 `JOURNAL.md`。
-- **退出标准**：单测覆盖三种 wrapper；脚本输出方差对比表。
-- **预估**：1 天。
+  - `MultiJudge`：N 个 sub-judge 聚合 → `(score, confidence, votes, raw_calls)`，confidence = 内部稳定度 × 跨 judge 一致度。
+  - `PositionSwapJudge` wrapper：A/B 互换两次取一致；冲突 → 0.5 + `agreement=False`。
+  - `SelfConsistencyJudge`：K 次重打，`confidence = 1 - stdev / 0.5`。
+  - `prompt.yaml` 改 `judges: [...] + judge_policy:`（**breaking**，旧单数 `judge:` 报错并附迁移示例）。
+  - 新表 `eval_judge_calls`（0005 migration）：N×K×P 行/case，Phase 14/17 可直接 SQL 复盘。
+  - `evalgate run --k / --concurrency / --policy-mode` 覆盖实验脚本用。
+  - [scripts/phase6_variance.py](../scripts/phase6_variance.py) 真本机实测：single 0.0377 vs multi 0.0136（lower 即更稳）。
+- **退出标准**：单测覆盖五种 wrapper + 迁移；本机 Ollama 真数据写 JOURNAL。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_6_PLAN.md](./PHASE_6_PLAN.md)。
 
-## Phase 7 · BadCase Finder（uncertainty sampling + outlier）   [TODO]
+## Phase 7 · BadCase Finder（uncertainty sampling + outlier）   [DONE]
 
-- **目标**：自动从历史 trace 里挑值得入 eval set 的 case。
+- **目标**：把 Phase 5/6 写到 `eval_results` 的 confidence/latency/cost 信号变成可执行的 active-learning 动作。
 - **交付**：
-  - 必须先有 Phase 5/6 的 confidence 数据（uncertainty sampling 排序的依据）。
-  - `BadCaseFinder` 三层过滤：
-    1. **Uncertainty**：按 Judge confidence 升序取 top-N。
-    2. **启发式 outlier**：latency > p95 / cost > p95 / 用户负反馈 flag 命中。
-    3. **LLM 辅助打标**：用 cheap model 给候选打 "subtle bad" 标签。
-  - REST：`GET /v1/badcases?limit=20&strategy=uncertainty|outlier|llm`。
-  - CLI：`evalgate badcase list --strategy uncertainty`、`evalgate badcase promote <case_id> --eval-set <id>`。
-- **退出标准**：能从 100 条 mock trace 中自动挑出 10 条 BadCase 并一键 promote。
-- **预估**：1 天。
+  - [src/evalgate/badcase/finder.py](../src/evalgate/badcase/finder.py)：`BadCase` dataclass + `find_uncertainty / find_outlier / find_llm / find`。
+  - [src/evalgate/badcase/repository.py](../src/evalgate/badcase/repository.py)：`promote_result_to_set` 写一条 `eval_case_set_memberships`（never duplicates payload），结构性 dedup via UniqueConstraint。
+  - REST：`GET /v1/badcases?strategy=...` + `POST /v1/badcases/{eval_result_id}/promote`。
+  - CLI：`evalgate badcase list --strategy {uncertainty|outlier|llm}` + `evalgate badcase promote --result <id> --eval-set <target>`。
+  - 数据源选 A（仅 `eval_results`，**不加新表 for finder**）。
+- **后置 refactor**（同 PR）：
+  - **Phase 7.5**：promote 从 「复制 EvalCaseRow」改为「插 `eval_case_set_memberships`」N:N + 新 `AlreadyPromotedError`（409）。详见 [PHASE_7_PLAN.md 文末](./PHASE_7_PLAN.md)。
+  - **Phase 4.5**：彻底删 `EvalCaseRow.eval_set_id`，membership 表成为唯一真理源（migration 0007 含可逆 downgrade）。`SameSetPromotionError` 取消，归并到 `AlreadyPromotedError`。
+- **退出标准**：[scripts/phase7_badcase_smoke.py](../scripts/phase7_badcase_smoke.py) 走通：10 case → finder 拿 top-3 → promote 落 target set。全 123 测试绿。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_7_PLAN.md](./PHASE_7_PLAN.md)。
 
 ## Phase 8 · RAG-aware Evaluator（RAGAS）   [TODO]
 
@@ -178,9 +183,72 @@
 
 ---
 
+## 亮点 Phase（可选，按依赖择机插入）
+
+> 这四个 phase **不在 design.md 的最小完整形态里**，是给 EvalGate 加技术深度 / 简历亮点用的。
+> 每个 phase 都标了 **依赖**（必须先做完哪些 phase）；不强制按编号顺序。
+
+## Phase 15 · Adversarial Case Synth（红队自动出题）   [TODO]
+
+- **目标**：从 attribution 报告找最弱 tag → 用 generator-LLM **自动生成同 tag 的"刁钻 case"** → 人审后入 eval set，形成 "评测 → 找弱点 → 自动出题 → 再评测" 的飞轮。
+- **依赖**：Phase 7（BadCase Finder 提供 attribution + uncertainty）+ Phase 10（safety 检测器复用做对抗模板，可不严格阻塞）。
+- **交付**：
+  - `AdversarialSynth`：输入 `(tag, weak_cases[5..10])`，调用 generator-LLM 产 K=10 条候选 case；模板覆盖：边界值、歧义指代、prompt injection（"ignore previous instructions..."）、role confusion。
+  - 人审 gate：生成的 case 进 `eval_cases.status="pending"`，**不参与 gate**；CLI `evalgate adversarial review --set <id>` 逐条 approve/reject 切到 `status="active"`。
+  - `eval_cases` 加 `status` enum（pending/active/archived）+ `source` enum（trace/manual/adversarial）→ 0006 migration。
+  - REST：`POST /v1/eval-sets/{id}/adversarial?tag=<t>&k=10`。
+  - 报告：`evalgate adversarial stats` 输出近 N 次 adversarial 命中率（多少条让 candidate 得分降 ≥ 0.2）。
+- **退出标准**：从 billing tag 自动出 10 条，approve 6 条；新 candidate 在其中 ≥3 条得分 < 0.5 → gate fail；录一段 demo screencast。
+- **预估**：1 天。
+- **简历语言**：automated red-teaming + adversarial regression suite + closed-loop eval。
+
+## Phase 16 · Sequential Gate（边跑边判，省 judge 调用）   [TODO]
+
+- **目标**：CI gate 不再"跑满 N 才下结论"，而是流式接 `(case_id, score)`，每跑 K 条评估一次 → **显著变差立即停跑 fail / 显著一致提前 pass**，控制累计 Type-I error。
+- **依赖**：Phase 2（bootstrap CI 实现）+ Phase 6（per-case score 流式产出）。
+- **交付**：
+  - `SequentialGate` 模块：用 **α-spending**（O'Brien-Fleming 或 Pocock 边界）维持累计 α=0.05；连续 M 次没显著 → early pass；任一窗口越下边界 → early fail。
+  - `evalgate run --gate-mode sequential --baseline-run <id>`：runner 每出一条结果就问 gate 「还要继续吗」。
+  - gate 报告新增字段：`stopped_early: bool` + `cases_consumed: int` + `boundary_used: str`。
+  - 单测：simulate 1000 次 H0 / H1，断言实际 Type-I error ≈ 0.05、平均 case 消耗下降 ≥ 50%。
+- **退出标准**：同一 regressed PR 上对比 fixed-N gate vs sequential gate，judge 调用平均省 ≥ 50%，Type-I error 保持 ≤ 0.05。
+- **预估**：1 天（统计实现 + 蒙特卡洛单测占大头）。
+- **简历语言**：group sequential testing + α-spending function + cost-aware CI。
+
+## Phase 17 · Judge Calibration（ECE + temperature scaling）   [TODO]
+
+- **目标**：让 judge 给出的 `confidence` 真有概率意义——judge 说 0.8，实际人工通过率就是 80%。
+- **依赖**：Phase 6（multi-judge confidence）+ Phase 14（人工标注 ground truth ≥ 30 条）。
+- **交付**：
+  - 用 Phase 14 那批人标 case 配对 `(judge_score, human_label)`：
+    - 画 **reliability diagram**（10 bins）；
+    - 算 **ECE** + **MCE**；
+    - 跑 **temperature scaling**（单参数 logistic）拟合 → 落到 `calibration_params.json`。
+  - `CalibratedJudge` wrapper：原始 score → calibrated score；BadCase Finder 的 uncertainty sampling 切到 calibrated confidence。
+  - 报告：`evalgate calibration report` 输出 ECE-before / ECE-after + reliability 图（matplotlib png）。
+  - 单测：手造 miscalibrated 数据（systematic overconfidence），断言 temperature scaling 后 ECE 显著下降。
+- **退出标准**：ECE 从 ≥ 0.15 降到 ≤ 0.05；切到 calibrated confidence 后 BadCase Finder top-N 召回 mock-bad 提升（用合成数据可验证）。
+- **预估**：1 天。
+- **简历语言**：Expected Calibration Error + temperature scaling + reliability diagram；引 Guo et al. 2017。
+
+## Phase 18 · Shadow Mode（线上流量上做无害评测）   [TODO]
+
+- **目标**：candidate prompt 不只在 PR 上被评——**生产 X% 流量也并发跑 candidate**（结果不返给用户），同一套 4 轴聚合 → 提前发现 PR eval set 覆盖不到的 "unknown unknown"。
+- **依赖**：Phase 5（runner）+ Phase 3（trace ingest）+ Phase 13（cloud 部署，让真实生产 caller 接得上）。
+- **交付**：
+  - 客户端 SDK：`evalgate.shadow(primary_prompt, candidate_prompt, sample_rate=0.1)` 包一层——sample 命中时并发跑 candidate，结果**异步**推回 EvalGate；**fire-and-forget + 超时 1s 即丢**，绝不阻塞主路径。
+  - Backend：`POST /v1/shadow/observe` 接收 `(primary_result, candidate_result)` 对，按 `prompt_hash` 聚合；新表 `shadow_observations` + `shadow_reports`（每小时滚动算一次 4 轴）。
+  - 报警：rolling 24h shadow 报告里若 candidate 任一轴显著变差 → webhook 通知（Slack 优先）。
+  - 文档 [docs/SHADOW.md](./SHADOW.md)：接入只要 3 行代码。
+- **退出标准**：demo app 接入 shadow，跑 1k 次主流量，shadow report 给出 4 轴对比；故意让 candidate cost 高 20% 触发报警。
+- **预估**：1 天（不含 cloud 部署本身）。
+- **简历语言**：online shadow evaluation + production-traffic A/B + unknown-unknown detection。
+
+---
+
 ## 执行守则
 
-1. **不跳 phase**。每个 phase 都有"可独立 demo"的退出标准，不要边做 phase 7 边做 phase 11。
+1. **不跳 phase**（仅限 Phase 0–14）。每个 phase 都有"可独立 demo"的退出标准，不要边做 phase 7 边做 phase 11。亮点 Phase 15–18 按依赖择机插入，可缓做。
 2. **每个 phase 一个 PR / commit 块**。commit message 格式参照已有：`feat(scope): 一句话描述`。
 3. **每完成一个 phase**：
    - 改本文件状态为 `[DONE]`。
