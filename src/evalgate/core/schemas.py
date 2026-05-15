@@ -70,10 +70,16 @@ class EvalSetOut(BaseModel):
 
 
 class EvalCaseOut(BaseModel):
-    """API response shape for an eval_case row."""
+    """API response shape for an eval_case row.
+
+    Phase 4.5 made cases set-agnostic at the payload level — a case's
+    set membership is expressed by `eval_case_set_memberships`, which is
+    returned by `GET /v1/eval-sets/{set_id}` (the set is the container)
+    or `POST .../promote` (PromotionOut). The case itself never carries
+    `eval_set_id` in API output anymore.
+    """
 
     id: str
-    eval_set_id: str
     task_type: TaskKind
     input: dict[str, Any]
     expected: dict[str, Any] | None = None
@@ -98,6 +104,24 @@ class JudgeScore(BaseModel):
     raw: dict[str, Any] | None = None
 
 
+class EvalRecord(BaseModel):
+    """Per-case record produced by `evalgate run` and consumed by `evalgate gate`.
+
+    Field names are part of the public contract — Phase 18 shadow-mode
+    `POST /v1/shadow/observe` also consumes this shape, and the gate's
+    `multi_axis.AXES` extractors read these keys directly.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    case_id: str
+    tags: list[str] = Field(default_factory=list)
+    score: float
+    cost_usd: float = 0.0
+    latency_ms: int = 0
+    safety_violation: bool = False
+
+
 class AxisMetric(BaseModel):
     """One axis of the multi-axis CI gate (quality / cost / latency / safety)."""
 
@@ -116,3 +140,43 @@ class GateReport(BaseModel):
     axes: list[AxisMetric]
     attribution: dict[str, dict[str, float]] = Field(default_factory=dict)
     summary: str | None = None
+
+
+class PromotionOut(BaseModel):
+    """API response for `POST /v1/badcases/{eval_result_id}/promote`.
+
+    Mirrors `EvalCaseSetMembershipRow` (Phase 7.5): a structural membership
+    pointing the original case at a new set. The case payload itself is
+    NOT duplicated — clients that want the full case fetch it via
+    `GET /v1/eval-sets/{set_id}` and look for `id == eval_case_id`.
+    """
+
+    id: str
+    eval_case_id: str
+    eval_set_id: str
+    promoted_from_result_id: str | None = None
+    strategy: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class BadCaseOut(BaseModel):
+    """API response shape for a single BadCase candidate (Phase 7).
+
+    Mirrors `badcase.finder.BadCase` 1:1. Kept as a separate BaseModel rather
+    than reusing the dataclass directly so FastAPI's response_model schema
+    stays explicit and clients have a stable shape.
+    """
+
+    eval_result_id: str
+    eval_case_id: str | None = None
+    eval_run_id: str
+    score: float
+    judge_confidence: float | None = None
+    latency_ms: int
+    cost_usd: float
+    safety_violation: bool
+    tags: list[str] = Field(default_factory=list)
+    strategy: str
+    reason: str
+    llm_label: dict[str, Any] | None = None

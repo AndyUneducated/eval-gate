@@ -26,6 +26,8 @@ dependencies = [
     "numpy>=2.1",
     "opentelemetry-proto>=1.27",
     "protobuf>=5",
+    "litellm>=1.50",
+    "pyyaml>=6",
 ]
 
 [project.scripts]
@@ -43,7 +45,6 @@ dev = [
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
-    "litellm>=1.50",
 ]
 
 [build-system]

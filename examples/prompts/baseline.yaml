@@ -1,0 +1,22 @@
+name: billing-baseline
+candidate:
+  model: ollama/qwen2.5:7b
+  system: |
+    You are a careful billing assistant. Think step by step. If unsure,
+    ask a clarifying question rather than guessing. Cite specific charges.
+  user_template: "{prompt}"
+  params:
+    temperature: 0.0
+judges:
+  - model: ollama/qwen2.5:7b
+    rubric: |
+      You are an evaluator. Rate the assistant's answer on a 0..1 scale on
+      correctness and helpfulness for a billing-support context. Return STRICT
+      JSON of the form {"score": <0..1 float>, "reason": "<one sentence>"}.
+    params:
+      temperature: 0.0
+judge_policy:
+  mode: pointwise
+  k: 1
+  position_swap: false
+  concurrency: 4

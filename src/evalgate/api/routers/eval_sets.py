@@ -67,7 +67,6 @@ def _set_out(row) -> EvalSetOut:
 def _case_out(row) -> EvalCaseOut:
     return EvalCaseOut(
         id=row.id,
-        eval_set_id=row.eval_set_id,
         task_type=TaskKind(row.task_type),
         input=row.input,
         expected=row.expected,

@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.core.schemas import TaskKind
-from evalgate.db.models import EvalCaseRow, EvalSetRow
+from evalgate.db.models import EvalCaseRow, EvalCaseSetMembershipRow, EvalSetRow
 from evalgate.ingest import persistence
 from evalgate.ingest.case_extract import NoLLMSpanError, extract_case_from_trace
 
@@ -80,11 +80,35 @@ async def resolve_set_id(session: AsyncSession, identifier: str) -> str:
 
 
 async def list_cases(session: AsyncSession, set_id: str) -> list[EvalCaseRow]:
+    """Return all cases that belong to ``set_id``.
+
+    Single source of truth (Phase 4.5): every case lives in a set via
+    exactly one ``EvalCaseSetMembershipRow`` row (or more, if it was
+    promoted into additional sets). Order by case ``created_at`` ascending
+    so Phase 5 runner iteration stays deterministic.
+    """
     stmt = (
         select(EvalCaseRow)
-        .where(EvalCaseRow.eval_set_id == set_id)
+        .join(
+            EvalCaseSetMembershipRow,
+            EvalCaseSetMembershipRow.eval_case_id == EvalCaseRow.id,
+        )
+        .where(EvalCaseSetMembershipRow.eval_set_id == set_id)
         .order_by(EvalCaseRow.created_at)
     )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def list_memberships(
+    session: AsyncSession, *, set_id: str | None = None, case_id: str | None = None
+) -> list[EvalCaseSetMembershipRow]:
+    """Inspect raw memberships for a set or a case (audit + Phase 7 tests)."""
+    stmt = select(EvalCaseSetMembershipRow)
+    if set_id is not None:
+        stmt = stmt.where(EvalCaseSetMembershipRow.eval_set_id == set_id)
+    if case_id is not None:
+        stmt = stmt.where(EvalCaseSetMembershipRow.eval_case_id == case_id)
+    stmt = stmt.order_by(EvalCaseSetMembershipRow.created_at)
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -104,7 +128,6 @@ async def add_case(
         raise EvalSetNotFoundError(f"no eval_set with id {set_id!r}")
     row = EvalCaseRow(
         id=_new_id(),
-        eval_set_id=set_id,
         task_type=str(task_type),
         input=dict(input),
         expected=dict(expected) if expected is not None else None,
@@ -112,7 +135,16 @@ async def add_case(
         source_trace_id=source_trace_id,
         source_span_id=source_span_id,
     )
+    membership = EvalCaseSetMembershipRow(
+        id=_new_id(),
+        eval_case_id=row.id,
+        eval_set_id=set_id,
+        promoted_from_result_id=None,
+        strategy=None,
+        tags=[],
+    )
     session.add(row)
+    session.add(membership)
     await session.commit()
     await session.refresh(row)
     return row
@@ -173,5 +205,6 @@ __all__ = [
     "get_eval_set",
     "list_cases",
     "list_eval_sets",
+    "list_memberships",
     "resolve_set_id",
 ]
