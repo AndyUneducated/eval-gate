@@ -1,0 +1,24 @@
+name: variance-single-pointwise
+candidate:
+  model: ollama/qwen2.5:7b
+  system: |
+    You are a billing assistant. Answer concisely and accurately.
+  user_template: "{prompt}"
+  params:
+    temperature: 0.0
+judges:
+  - model: ollama/qwen2.5:7b
+    rubric: |
+      Rate the assistant's billing answer on a 0..1 scale on correctness and
+      helpfulness. Return STRICT JSON: {"score": <0..1>, "reason": "..."}.
+    # Match the temperature used by the multi_pairwise sub-judges so the
+    # variance comparison isolates *robustness*, not just sampling
+    # determinism. With temperature=0 the single judge would trivially
+    # score 0.0000 stdev across runs and the comparison would be vacuous.
+    params:
+      temperature: 0.7
+judge_policy:
+  mode: pointwise
+  k: 1
+  position_swap: false
+  concurrency: 4
