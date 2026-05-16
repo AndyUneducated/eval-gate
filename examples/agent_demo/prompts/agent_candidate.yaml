@@ -1,0 +1,32 @@
+name: agent-candidate
+candidate:
+  model: ollama/qwen2.5:7b
+  system: |
+    You are an agent planner. Decide tool calls step by step and then provide
+    a final answer. Always return strict JSON actions.
+  user_template: |
+    User question: {question}
+  params:
+    temperature: 0.0
+
+judges:
+  - model: ollama/qwen2.5:7b
+    rubric: |
+      Rate the answer 0..1. Return STRICT JSON: {"score": <0..1>, "reason": "..."}.
+    params:
+      temperature: 0.0
+judge_policy:
+  mode: pointwise
+  k: 1
+  position_swap: false
+  concurrency: 4
+
+# Deliberately regressed order: second tool is wrong for billing-policy
+# workflow, which should hurt step_wise_success while final answer can still
+# be the same.
+agent_runtime:
+  max_steps: 4
+  tool_names:
+    - lookup_invoice
+    - get_payment_attempts
+    - fetch_policy

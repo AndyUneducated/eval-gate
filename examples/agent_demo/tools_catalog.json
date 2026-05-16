@@ -1,0 +1,14 @@
+[
+  {
+    "name": "lookup_invoice",
+    "description": "Fetch invoice state by invoice_id."
+  },
+  {
+    "name": "fetch_policy",
+    "description": "Fetch billing policy snippets by topic."
+  },
+  {
+    "name": "get_payment_attempts",
+    "description": "Fetch historical payment attempt events."
+  }
+]
