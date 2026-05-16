@@ -1,7 +1,7 @@
 # EvalGate
 
-> **Eval-First LLMOps with CI Gate** — turn production LLM traces into a multi-axis
-> regression gate that blocks bad PRs from shipping.
+> **以 Eval 为先的 LLMOps + CI 卡口** —— 把线上 LLM trace 转化为多维度回归门，
+> 让有问题的 PR 在合入前就被拦下来。
 
 [![CI](https://github.com/AndyUneducated/eval-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyUneducated/eval-gate/actions/workflows/ci.yml)
 [![eval-gate](https://github.com/AndyUneducated/eval-gate/actions/workflows/eval-gate.yml/badge.svg)](https://github.com/AndyUneducated/eval-gate/actions/workflows/eval-gate.yml)
@@ -28,124 +28,111 @@
 
 ---
 
-## Why EvalGate
+## 为什么做 EvalGate
 
-LLM PRs ship with a single number on the wall — *"pass rate dropped 0.5%, looks fine"* — and that number is wrong four ways at once. A real CI gate has to reject regressions on **quality, cost, latency, and safety** simultaneously, with enough statistical rigor to survive stochastic judges, and enough attribution to point at the offending intent or tag.
+LLM 类 PR 上墙时通常只挂一个数字 —— *"pass rate 降了 0.5%，应该没事"* —— 而这个数字同时在四个维度上是错的。一个真正能用的 CI 卡口必须同时拒绝 **质量、成本、延迟、安全** 四类回归，并且要有足够的统计严谨度撑住随机性 judge，还要把锅指到具体的 intent / tag 上。
 
-| What the PR author wants to know | What you actually need to answer it | Why a naive eval pass-rate gate fails |
+| PR 作者关心什么 | 真正要算清这个问题，你需要什么 | 朴素的 eval pass-rate 卡口为什么不够 |
 |---|---|---|
-| *"Did answer quality regress?"* | bootstrap-CI on pass rate, per task | Stochastic LLM judges drift 1–3 pts on identical inputs; naive deltas trip on noise and miss real regressions. |
-| *"Did this PR get more expensive?"* | per-tag / per-intent token-spend deltas | A flat *"+5% tokens"* hides *"+50% on billing intent, free elsewhere"* — exactly the regression you wanted caught. |
-| *"Will users feel a slowdown?"* | p95 latency, not mean | p50 stays flat while the tail blows up; users feel the tail. |
-| *"Did we open a new safety hole?"* | four sub-axes: PII in / PII leak out, jailbreak attempt / jailbreak comply | One *"violation rate"* number conflates *"users tried to jailbreak"* (input) with *"the model complied"* (output) — opposite signals, opposite fixes. |
-| *"Is this regression real or just noise?"* | bootstrap CI + significance flag per axis | Without significance, every PR is either green-by-luck or red-by-luck and the gate gets disabled within a week. |
-| *"Where did it regress?"* | tag / intent attribution table on every report | Aggregate numbers don't route to an owner; per-tag rows do. |
+| *"回答质量退步了吗？"* | 按任务跑 bootstrap-CI 的 pass rate | 随机性 LLM judge 在相同输入下也会漂 1–3 个点；朴素差值要么把噪声当回归，要么漏掉真的回归。 |
+| *"这个 PR 是不是更贵了？"* | 按 tag / intent 切的 token 消耗变化 | 平均 *"+5% tokens"* 会盖住 *"billing intent +50%、其它打平"* —— 而后者恰恰才是你想抓的回归。 |
+| *"用户会不会变卡？"* | 看 p95 延迟，不是均值 | p50 可以稳如老狗，长尾却已经炸了，用户感受到的是长尾。 |
+| *"是不是开了新的安全口子？"* | 拆成 4 个子维度：PII 入 / PII 漏出、jailbreak 尝试 / jailbreak 顺从 | 单一的 *"违规率"* 把 *"有人试图越狱"*（输入）和 *"模型真的照办了"*（输出）混在一起 —— 这两个信号方向相反，修复手段也完全不同。 |
+| *"这次回归是真的还是噪声？"* | 每个维度都要 bootstrap CI + 显著性标签 | 没有显著性，每个 PR 要么靠运气绿、要么靠运气红，一周之内卡口就会被人关掉。 |
+| *"是在哪退步的？"* | 每份报告都附 tag / intent 归因表 | 聚合数字没法对应到具体负责人；按 tag 切的明细行可以。 |
 
-EvalGate routes each axis to the right statistic and reports them in the same PR comment, so the gate decision is a fact, not an opinion.
+EvalGate 把每个维度路由到合适的统计方法，并把结果汇总到同一条 PR 评论里，让卡口的判断是事实，而不是一句口头评价。
 
-## What it does
+## 它到底做什么
 
-EvalGate ingests OpenTelemetry traces from your LLM app, mines **BadCases** via
-uncertainty sampling, runs a **task-aware judge** (RAG / Agent / generic) on every PR,
-and **blocks merges** when a four-axis gate trips:
+EvalGate 摄取你的 LLM 应用发出的 OpenTelemetry trace，通过不确定性采样挖出 **BadCase**，
+在每个 PR 上跑一套 **任务感知 judge**（RAG / Agent / 通用），当四维卡口触发时直接 **block 合入**：
 
-- **quality** — pass rate, with bootstrap-CI significance to defeat stochastic-eval noise
-- **cost** — token-spend regression
-- **latency** — p95 latency regression
-- **safety** — PII (Presidio) and jailbreak (keyword + LLM-classifier) violation rates, broken out into four sub-axes (`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`)
+- **quality** —— pass rate，用 bootstrap-CI 显著性顶住随机 eval 噪声
+- **cost** —— token 消耗回归
+- **latency** —— p95 延迟回归
+- **safety** —— PII（Presidio）与 jailbreak（关键词 + LLM 分类器）违规率，拆成四个子维度（`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）
 
-Regressions are attributed by `tag` / `intent` so the report says
-*"billing intent dropped 8 pts"* instead of *"pass rate dropped 0.5%"*.
+回归会按 `tag` / `intent` 做归因，因此报告写的是
+*"billing intent 掉了 8 个点"*，而不是 *"pass rate 掉了 0.5%"*。
 
-> **Status**: multi-axis CI gate v1 shipped (fixtures-driven). Real OTel ingest + judge runner up next.
+> **状态**：多维度 CI 卡口 v1 已落地（基于 fixtures 驱动）。下一步是接真实 OTel ingest 与 judge runner。
 
-## Project docs
+## 项目文档
 
-| File | What's in it |
+| 文件 | 写了什么 |
 |---|---|
-| [`docs/design.md`](docs/design.md) | Long-form product + tech spec — single source of truth for features, architecture, trade-offs. Read this first. |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phased execution plan (~1 person-day per phase). Tracks `[DONE]` / `[NEXT]` / `[TODO]`. |
-| [`DECISIONS.md`](DECISIONS.md) | ADR-style log of every load-bearing technical decision (why OTel, why PG+JSONB, why kill prompt UI, ...). |
-| [`JOURNAL.md`](JOURNAL.md) | Reverse-chrono milestone log — one paragraph per shipped phase. |
+| [`docs/design.md`](docs/design.md) | 完整的产品 + 技术 spec —— 功能、架构、取舍的唯一信息源，先看这个。 |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 分阶段的交付计划（每个阶段大约 1 人天），用 `[DONE]` / `[NEXT]` / `[TODO]` 跟踪。 |
+| [`DECISIONS.md`](DECISIONS.md) | ADR 风格的关键技术决策日志（为什么用 OTel、为什么 PG+JSONB、为什么砍掉 prompt UI ……）。 |
+| [`JOURNAL.md`](JOURNAL.md) | 倒序的里程碑日志 —— 每个上线阶段一段话。 |
 
-## Quickstart
+## 快速开始
 
 ```bash
-# 1. Install uv (https://docs.astral.sh/uv/), then:
+# 1. 装 uv（https://docs.astral.sh/uv/），然后：
 uv sync
 
-# 2. Boot Postgres
+# 2. 起 Postgres
 make db-up
 
-# 3. Run tests
+# 3. 跑测试
 make test
 
-# 4. Try the multi-axis gate against demo fixtures
+# 4. 用 demo fixtures 试一下多维度卡口
 uv run python scripts/seed_demo.py
 uv run evalgate gate \
   --baseline examples/fixtures/baseline.json \
   --candidate examples/fixtures/candidate.json
-# exit 0 = gate passed, exit 1 = regression detected (used by CI)
+# exit 0 = 卡口通过，exit 1 = 检测到回归（CI 会用这个返回码）
 ```
 
-## CI gate
+## CI 卡口
 
-The `eval-gate` workflow runs on every PR: it seeds demo eval records, calls
-`evalgate gate`, uploads the JSON report as an artifact, comments the four-axis
-table on the PR, and fails the check if any axis regresses with a
-statistically significant delta. Swap the seeded fixtures for real
-baseline / candidate eval outputs to wire the gate against your own pipeline.
+`eval-gate` workflow 会在每个 PR 上跑：先 seed demo eval 记录，调用 `evalgate gate`，把 JSON 报告作为
+artifact 上传，在 PR 上发四维度的归因表评论，任何一个维度出现"统计显著的回归"就让这次 check 失败。
+把 seed 的 fixtures 换成你自己 baseline / candidate eval 输出，就能把卡口接到你自己的 pipeline 上。
 
-## Development
+## 开发
 
-| Command | What it does |
+| 命令 | 作用 |
 |---|---|
-| `make install` | Install all deps (incl. dev tools) into `.venv/` |
-| `make dev` | Start local Postgres in Docker |
-| `make test` | Run pytest |
-| `make lint` | Ruff check + format check |
-| `make format` | Auto-fix lint + format |
-| `make db-up` / `make db-down` | Manage local Postgres |
-| `make ui` | Start the Streamlit ops UI on `http://127.0.0.1:8501` (talks to `evalgate-api` over HTTP) |
+| `make install` | 把所有依赖（含 dev 工具）装到 `.venv/` |
+| `make dev` | 用 Docker 启动本地 Postgres |
+| `make test` | 跑 pytest |
+| `make lint` | Ruff check + format 检查 |
+| `make format` | 自动修复 lint + format |
+| `make db-up` / `make db-down` | 管理本地 Postgres |
+| `make ui` | 在 `http://127.0.0.1:8501` 启动 Streamlit 运维 UI（通过 HTTP 调 `evalgate-api`） |
 
-## Ops UI (Phase 11)
+## 运维 UI（Phase 11）
 
-A read-only Streamlit UI lives at `src/evalgate/ui/`. It talks to the FastAPI
-backend over `/v1/*` only (never directly to the DB), so it stays a real
-consumer of the same REST surface as CLI / CI.
+`src/evalgate/ui/` 下是只读的 Streamlit UI。它只走 FastAPI 后端的 `/v1/*`（绝不直接连 DB），
+所以它跟 CLI / CI 用的是同一套 REST 表面，是这套 API 的真实消费方。
 
 ```bash
-make db-up                      # start Postgres
-uv run alembic upgrade head     # apply migrations
+make db-up                      # 起 Postgres
+uv run alembic upgrade head     # 跑 migrations
 uv run python scripts/seed_demo.py
-uv run evalgate-api             # in one shell — port 8000
-make ui                         # in another — port 8501, opens in browser
+uv run evalgate-api             # 一个 shell — 8000 端口
+make ui                         # 另一个 shell — 8501 端口，会自动开浏览器
 ```
 
-Three pages:
+三个页面：
 
-1. **Traces** — paginated list + span tree detail; "Promote to eval set" button
-   wraps `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`.
-2. **Eval Sets** — create new sets; pick one to inspect its cases.
-3. **Reports** — pick an eval set, two `eval_runs` (baseline / candidate),
-   render the four-axis gate verdict + sub-axes (RAG / safety) + tag
-   attribution.
+1. **Traces** —— 分页列表 + span 树详情；"Promote to eval set" 按钮包了
+   `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`。
+2. **Eval Sets** —— 新建 eval set；选中后可以看它的 cases。
+3. **Reports** —— 选一个 eval set、两个 `eval_runs`（baseline / candidate），
+   渲染四维卡口结论 + 子维度（RAG / safety）+ tag 归因。
 
-Configure the API base URL with `EVALGATE_API_URL` (default `http://127.0.0.1:8000`).
+API 地址用 `EVALGATE_API_URL` 配置（默认 `http://127.0.0.1:8000`）。
 
-## Contributing
+## 贡献
 
-PRs are welcome — especially around new judge tasks, additional gate axes, and adapters for non-OTel trace sources.
-
-1. **Set up.** Install [`uv`](https://docs.astral.sh/uv/), then `uv sync` (installs runtime + the `dev` group: pytest, ruff, pre-commit, OTel SDK).
-2. **Boot Postgres locally.** `make db-up` (Docker Compose); apply migrations with `uv run alembic upgrade head`.
-3. **Run the checks before pushing.** `make lint` (ruff check + format check) and `make test` (pytest, async-mode auto). Optional: `pre-commit install` to wire the same checks into git.
-4. **Schema changes** go through Alembic — `uv run alembic revision --autogenerate -m "<msg>"` against a clean DB, then commit the migration alongside the model change.
-5. **Document load-bearing decisions** in [`DECISIONS.md`](DECISIONS.md) (ADR-style); shipped phases in [`JOURNAL.md`](JOURNAL.md); product-level changes in [`docs/design.md`](docs/design.md).
-6. **CI gates every PR** with both `ci.yml` (lint + tests) and `eval-gate.yml` (multi-axis regression gate); the gate must pass for merge.
-
-For larger proposals (new gate axis, breaking API change), open an issue first.
+欢迎 PR —— 详细流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+特别欢迎：新增 judge 任务、补充新的卡口维度、为非 OTel 的 trace 源写 adapter。
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0，详见 [LICENSE](LICENSE)。
