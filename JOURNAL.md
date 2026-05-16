@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-05-15 · Phase 9 · Agent Trajectory Evaluator（Tool Runtime）
+
+Phase 9 把 task-aware evaluator 从“RAG + generic”补全到 agent：不再让模型自报轨迹，而是把真实 tool runtime 接到 evaluator 链路里，先执行再评分。核心新增 `src/evalgate/evaluator/agent/` 五件套（`runtime / tools / parser / types / evaluator`）：planner 输出 strict JSON action（`call_tool` / `final_answer`），runtime 每步执行 builtin tools 生成 `actual_trajectory`，`AgentTrajectoryEvaluator` 再用 `expected_trajectory` 对齐打分。匹配规则按既定决策落地：**tool 名与顺序严格，args 用 expected ⊆ actual 深度子集匹配**；指标是 `tool_call_accuracy` + `step_wise_success`（前缀连续成功率），并通过 `EvaluationOutcome.sub_metrics` 进入 gate 的 `quality.sub_metrics`。
+
+这次把数据链也补完整了：
+
+- migration 0009 给 `eval_cases` 加 `expected_trajectory`（JSONB/JSON, default `[]`），ORM/REST/CLI/repository 全透传；
+- CLI 新增 `evalgate eval-set add-agent-case --step '{"tool":"...","args":{...}}'`，支持手工构造多步 agent case；
+- `case_extract` 新增 tool span -> expected trajectory 的 best-effort 抽取（`add_case_from_trace` 自动透传）；
+- router 只在 `prompt.yaml` 有 `agent_runtime` 时注册 agent evaluator，没配就保持 per-case `unsupported_task_type`（不中断整 run），与 Phase 8 的设计一致。
+
+为了保证“中间步骤错但最后答案蒙对”能被识别，demo 和 smoke 专门做了这种反例：`examples/agent_demo/prompts/agent_candidate.yaml` 把第二步工具顺序故意改错，`scripts/phase9_agent_smoke.py` 断言 `quality.sub_metrics.step_wise_success` 下降。因为 runtime 是真实执行的，最终答案文本不再能掩盖路径错误，这正是 Phase 9 的价值。
+
+**验证结果**：新增 9 组 Phase 9 测试（runtime / evaluator / schema round-trip / run_eval / router / extractor / gate / prompt_spec / CLI），并通过针对性回归；全量测试、lint、format、phase9 smoke 全通过。  
+**关键技术语言**：tool-runtime-grounded trajectory eval · strict JSON action protocol · ordered tool matching + args subset semantics · prefix step-wise success · quality nested sub-metrics gate。
+
+## 2026-05-15 · Phase 8 · RAG-aware Evaluator + Evaluator 抽象层
+
+把 runner 的硬编码"candidate→MultiJudge"流水拆成 `EvaluatorRouter` 驱动的 `task_type` 分派；同时把 RAG 评测路径接到官方 `ragas` 包上，跑 `faithfulness / context_precision / answer_relevance` 三项。Phase 8 同时是一次结构调整：`judge.runner` 直接删除，`judge/` 退守做 LLM-as-judge 原语，`src/evalgate/evaluator/` 接管 orchestration。
+
+主要工程：
+
+- **新抽象层 `evaluator/`**：`Evaluator` Protocol + `EvaluationOutcome` dataclass 是 router 和具体 evaluator 之间唯一的货币（包括 score / sub_metrics / confidence / output_text / retrieved_contexts / cost / latency / raw_calls / error）。`build_router(spec, mock=...)` 永远注册 `generic`（包旧 MultiJudge 路径），看到 prompt YAML 里有 `retriever:` + `rag_evaluator:` 才注册 `rag`；`agent` 留给 Phase 9 一行注册即可。
+- **真 ragas + LiteLLM adapter**：用户明确选 A 路径——保留 RAGAS 品牌而不是自己重写 prompts。`ragas_adapter.py` 写一个 `LiteLLMChatModel(BaseChatModel)` + `LiteLLMEmbeddings(Embeddings)` shim 让 ragas 的 langchain 调用全部走我们已有的 `litellm.acompletion` / `aembedding`。`mock_text` / `mock_mode` 短路给单测和 CI 用，hash 384-dim 伪向量保证不连 Ollama 也能跑。一个 `_RagasScorer` 把 `ragas.evaluate(Dataset.from_dict(row), metrics=[...])` 包成 async（`run_in_executor`），结果转 `JudgeCallRecord(judge_model="ragas:<metric>")` 落 `eval_judge_calls`，Phase 17 calibration 直接复用。
+- **Retriever 在 candidate 端（动态）**：用户选 B 路径——eval_case 上的 `retrieved_contexts` 是金标 reference（`context_precision_with_reference` 用），运行时让 candidate 自己查。`EmbeddingRetriever` 第一次 retrieve 触发 lazy 全 corpus embed（`asyncio.Lock` 防并发重复 embed），后续余弦排序取 top_k；候选 generator 用 `{contexts}` 渲染 user_template。
+- **Schema（migration 0008）**：`eval_cases.retrieved_contexts: list[str]` NOT NULL default `[]`；`eval_results.sub_metrics: dict[str,float] | None`；`eval_results.retrieved_contexts: list[str] | None`（运行时实际检索结果，badcase 审计）。SQLite 走 `batch_alter_table` 加列。
+- **Gate 显示分项**：`AxisMetric.sub_metrics: dict[str, "AxisMetric"] | None` 递归字段；`build_axis_metrics` 自动从 records 的 `sub_metrics` 派生 nested mean axes（每项 bootstrap CI）。**`quality.passed = passed AND all(sub.passed)`**——这点关键：candidate 把 faithfulness 拉到 0 但用 verbosity 把 answer_relevance 拉满，平均 score 不变也能 fail。`_summarize` 直接列出哪些 sub-metric 显著回归。
+
+几个抉择记一笔：
+
+1. **直接删 `judge.runner` 不留 alias**：用户给的明确指示"不必考虑向后兼容"。结果是 CLI / tests / phase7 smoke 同 PR 里全部切到 `evaluator.runner`，没有 deprecation 通道；干净度比"再多一周兼容期"值得。
+2. **adapter 而不是 ragas custom_metric**：custom_metric 路径要写 ragas 那边的 `Metric` 子类，相当于把 ragas 的 prompt 工程也接管过来。adapter 路径只翻译"langchain 接口 → litellm 调用"——边界小、prompt 演进吃 ragas 上游红利。代价是 ragas 0.1/0.2 的内部 API（`base.llm = ...` vs 注入构造器）有差异，metric builder 用 `with contextlib.suppress(AttributeError)` 兜两种形状，mock 全跑通后实测 0.2.15 落地。
+3. **混合 set 部分聚合 sub_metrics**：generic case 不带 `sub_metrics`，RAG case 带；`_pluck_metric` 只看 dict 里有该 key 的 records → faithfulness 不会被一群 generic case 拉到 0。这是为了让 Phase 12 之后真实 CI 的 eval set 可以异质，不强迫"一个 set 全是 RAG"。
+4. **mock 模式 sub_metric=0 是预期**：`LiteLLMChatModel.mock_text` 返回固定字符串，ragas 的 claim 抽取 / NLI 解析失败收敛到 0；端到端 plumbing 全通，但有意义的 sub-metric 数字要真 LLM。这条 trade-off 写进 PHASE_8_PLAN 的"风险"小节，避免后人误以为 ragas 跑不出分。
+5. **`retrieved_contexts` 命名复用**：case 上和 result 上同名但含义不同（reference vs runtime），同名更直观，column docstring 区分。
+
+**Tests**：30 新测试 + 123 旧测试 = **153 passed**；`make lint` clean，`make format` clean。`EVALGATE_MOCK_LLM=1 PYTHONPATH=. python scripts/phase8_rag_smoke.py` 端到端跑通 5 case，gate 报告 `axes[quality].sub_metrics` 含三项嵌套 axis。本机 Ollama 真跑（`qwen2.5:7b` + `qwen3-embedding:8b`）的退出标准留给后续手动验证（README 已经能装 Ollama 的同学复现）。
+
+**关键技术语言**：task-aware evaluator dispatch · RAGAS faithfulness / context-precision / answer-relevance · LiteLLM↔langchain BaseChatModel adapter · embedding-based retriever (cosine over corpus) · nested sub-axis bootstrap CI · pluggable evaluator architecture for Phase 9 agent extensions.
+
+---
+
 ## 2026-05-15 · Phase 4.5 · `EvalCaseRow.eval_set_id` 下线（彻底归一到 memberships）
 
 7.5 之后再做一次自审：`EvalCaseRow.eval_set_id`（Phase 4 N:1）和 `EvalCaseSetMembershipRow`（Phase 7.5 N:N）并存是「两套真理」。原因之一就是「为了 Phase 4 / 5 / 6 一行不改」的保留策略——这是典型的 backward-compat 妥协。这一阶段把它彻底改干净：case 是纯 payload，membership 是唯一的「case 属于哪些 set」之处。

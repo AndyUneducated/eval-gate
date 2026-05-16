@@ -101,26 +101,37 @@
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_7_PLAN.md](./PHASE_7_PLAN.md)。
 
-## Phase 8 · RAG-aware Evaluator（RAGAS）   [TODO]
+## Phase 8 · RAG-aware Evaluator（RAGAS）   [DONE]
 
 - **目标**：当 case 的 `task_type=rag` 时，走专用 evaluator。
-- **交付**：
-  - 集成 `ragas`：`faithfulness` + `context-precision` + `answer-relevance` 三项。
-  - `EvaluatorRouter`：按 `task_type` dispatch 到 RAGAS / TrajectoryEvaluator / GenericRubricJudge。
-  - `eval_case` 增加 `retrieved_contexts: text[]` 字段（migration）。
-  - 一个 RAG demo eval set（5 条），跑通端到端。
-- **退出标准**：单跑 `evalgate run --eval-set rag-demo` 得到三项 RAGAS metric 落库 + gate 报告里 quality 轴显示分项。
-- **预估**：1 天。
+- **已交付**：
+  - 引入官方 `ragas>=0.2`（实测 0.2.15）+ `datasets` + `langchain-core`；`src/evalgate/evaluator/rag/ragas_adapter.py` 写 LiteLLMChatModel + LiteLLMEmbeddings 把 ragas 的 langchain 调用导向 `litellm.acompletion / aembedding`；mock 模式走 SHA-256 384-dim 伪向量，CI 不连 Ollama。
+  - `EvaluatorRouter`（`src/evalgate/evaluator/router.py`）按 `TaskKind` 分派；Phase 8 注册 `generic`（Phase 5/6 MultiJudge 路径，搬到 `evaluator/generic.py`）+ `rag`；`agent` 留给 Phase 9 一行注册即可；`UnsupportedTaskTypeError` 不破坏整 run。
+  - 重构：删除 `src/evalgate/judge/runner.py`，新 `src/evalgate/evaluator/runner.py` 用 `EvaluationOutcome` dataclass 统一所有 evaluator 的输出；CLI / scripts / 测试全切到 `evaluator.runner`。
+  - 0008 migration：`eval_cases.retrieved_contexts`（金标 contexts）+ `eval_results.sub_metrics`（per-metric 分项）+ `eval_results.retrieved_contexts`（运行时检索结果，badcase 审计）。
+  - `EmbeddingRetriever`（candidate 端动态检索）：corpus.json + numpy 余弦排序 + lazy embed cache + `top_k` clamp。
+  - Gate 分项：`AxisMetric.sub_metrics: dict[str, AxisMetric] | None` 递归字段；`build_axis_metrics` 自动从 records 的 `sub_metrics` 派生 nested axes（每项 bootstrap CI），`quality.passed = passed AND all(sub.passed)`；混合 set 只在 RAG records 上聚合分项。
+  - REST `POST /v1/eval-sets/{id}/cases` + CLI `evalgate eval-set add-rag-case` 支持 `retrieved_contexts`；`examples/rag_demo/`（10 chunk corpus + 5 case seeder + baseline / weakened candidate YAML）+ `scripts/phase8_rag_smoke.py` 端到端跑通。
+  - 30 个新测试（router / retriever / rag_evaluator / litellm_adapter / migration round-trip / runner end-to-end / gate sub-axes），全部 aiosqlite + mock；总 153/153 绿。
+- **退出标准达成**：`EVALGATE_MOCK_LLM=1 PYTHONPATH=. python scripts/phase8_rag_smoke.py` 端到端跑通 5 case，gate 报告 `axes[quality].sub_metrics` 含 `{faithfulness, context_precision, answer_relevance}`，每项 baseline/candidate/delta/significant 齐全。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_8_PLAN.md](./PHASE_8_PLAN.md)。
 
-## Phase 9 · Agent Trajectory Evaluator   [TODO]
+## Phase 9 · Agent Trajectory Evaluator   [DONE]
 
 - **目标**：当 case 的 `task_type=agent` 时，按"动作序列"评测。
-- **交付**：
-  - `TrajectoryEvaluator`：`tool_call_accuracy`（命中预期 tool 名 + 参数集合）+ `step_wise_success`（每步是否前进）。
-  - `eval_case` 增加 `expected_trajectory: jsonb`（list of `{tool, args}` 步骤）。
-  - 一个 Agent demo eval set（3 条多步），跑通端到端。
-- **退出标准**：能正确识别 "中间步骤错但最终答案蒙对" 的 case 失败。
-- **预估**：1 天。
+- **已交付**：
+  - `AgentTrajectoryEvaluator`（`src/evalgate/evaluator/agent/evaluator.py`）：对比 `expected_trajectory` vs runtime `actual_trajectory`，输出 `tool_call_accuracy` + `step_wise_success` 两项，并写入 `EvaluationOutcome.sub_metrics`。
+  - `AgentRuntime`（`src/evalgate/evaluator/agent/runtime.py`）：LLM strict-JSON action loop（`call_tool` / `final_answer`）+ builtin tool registry 执行，产出真实轨迹；中间 parse/tool 错误作为 trajectory 质量信号记录进 `judge_raw`/`eval_judge_calls`。
+  - `EvaluatorRouter` 注册 `task_type=agent` 分支（`spec.agent_runtime` 存在时启用）；缺配置保持 `unsupported_task_type` per-case error，不炸整 run。
+  - `PromptSpec` 新增 `agent_runtime` 块：`max_steps` / `tool_names` / `planner_model` + 校验（非空、去重）。
+  - `eval_cases` 新增 `expected_trajectory`（0009 migration），并打通 repository / REST / CLI（含 `evalgate eval-set add-agent-case --step ...`）。
+  - `case_extract` 新增 tool span 抽取 `expected_trajectory`（`add_case_from_trace` 自动透传）。
+  - Agent demo：`examples/agent_demo/`（3 条多步 case + baseline/candidate prompt）+ `scripts/phase9_agent_smoke.py` 端到端 smoke。
+  - 测试补齐：runtime / evaluator / router / schema round-trip / runner e2e / gate sub-axes / extractor / prompt spec / CLI，覆盖中间步骤错判定逻辑。
+- **退出标准达成**：`PYTHONPATH=. .venv/bin/python scripts/phase9_agent_smoke.py` 能识别并暴露“中间步骤错但最终答案可用”的 regression（`quality.sub_metrics.step_wise_success` 下滑）。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_9_PLAN.md](./PHASE_9_PLAN.md)。
 
 ## Phase 10 · Safety 轴落地（PII + jailbreak）   [TODO]
 
