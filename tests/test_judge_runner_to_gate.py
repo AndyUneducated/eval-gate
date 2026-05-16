@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 from evalgate.eval_set import repository as set_repo
+from evalgate.evaluator import runner
 from evalgate.gate.decision import build_gate_report
-from evalgate.judge import runner
 
 _PROMPT = """
 name: t

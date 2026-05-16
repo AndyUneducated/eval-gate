@@ -41,6 +41,10 @@ class CreateCaseRequest(BaseModel):
     input: dict[str, Any]
     expected: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
+    # Phase 8: gold contexts for RAG cases. Empty for generic / agent.
+    retrieved_contexts: list[str] = Field(default_factory=list)
+    # Phase 9: gold tool plan for agent cases.
+    expected_trajectory: list[dict[str, Any]] = Field(default_factory=list)
     source_trace_id: str | None = None
     source_span_id: str | None = None
 
@@ -71,6 +75,8 @@ def _case_out(row) -> EvalCaseOut:
         input=row.input,
         expected=row.expected,
         tags=list(row.tags or []),
+        retrieved_contexts=list(row.retrieved_contexts or []),
+        expected_trajectory=list(row.expected_trajectory or []),
         source_trace_id=row.source_trace_id,
         source_span_id=row.source_span_id,
         created_at=row.created_at,
@@ -126,6 +132,8 @@ async def add_case(set_id: str, payload: CreateCaseRequest, session: SessionDep)
             input=payload.input,
             expected=payload.expected,
             tags=payload.tags,
+            retrieved_contexts=payload.retrieved_contexts,
+            expected_trajectory=payload.expected_trajectory,
             source_trace_id=payload.source_trace_id,
             source_span_id=payload.source_span_id,
         )

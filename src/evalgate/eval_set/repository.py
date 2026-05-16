@@ -120,6 +120,8 @@ async def add_case(
     input: dict[str, Any],
     expected: dict[str, Any] | None = None,
     tags: list[str] | None = None,
+    retrieved_contexts: list[str] | None = None,
+    expected_trajectory: list[dict[str, Any]] | None = None,
     source_trace_id: str | None = None,
     source_span_id: str | None = None,
 ) -> EvalCaseRow:
@@ -132,6 +134,11 @@ async def add_case(
         input=dict(input),
         expected=dict(expected) if expected is not None else None,
         tags=list(tags or []),
+        retrieved_contexts=[str(c) for c in (retrieved_contexts or [])],
+        expected_trajectory=[
+            dict(step) if isinstance(step, dict) else {"raw": step}
+            for step in (expected_trajectory or [])
+        ],
         source_trace_id=source_trace_id,
         source_span_id=source_span_id,
     )
@@ -188,6 +195,8 @@ async def add_case_from_trace(
         input=payload["input"],
         expected=payload["expected"],
         tags=payload["tags"],
+        retrieved_contexts=payload.get("retrieved_contexts") or [],
+        expected_trajectory=payload.get("expected_trajectory") or [],
         source_trace_id=trace_id,
         source_span_id=payload["source_span_id"],
     )

@@ -56,6 +56,59 @@ class JudgePolicySpec(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=32)
 
 
+RagMetricName = Literal["faithfulness", "context_precision", "answer_relevance"]
+
+
+class RetrieverSpec(BaseModel):
+    """Phase 8: how the candidate retrieves contexts at run time.
+
+    Currently we ship one ``kind`` (``embedding``) — a deterministic
+    embedding-then-cosine retriever over a JSON corpus file. The kind tag
+    is left here so future Phase iterations can plug in BM25 / a real
+    vector DB without touching call sites.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["embedding"] = "embedding"
+    corpus_path: str
+    embedding_model: str
+    top_k: int = Field(default=4, ge=1, le=50)
+
+
+class RagEvaluatorSpec(BaseModel):
+    """Phase 8: ragas knobs (which metrics, which judge LLM, which embeddings).
+
+    The judge LLM here is the model ragas itself uses to e.g. extract
+    claims for ``faithfulness`` — it's independent of the candidate
+    generator's model and of the embedding model used for retrieval.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_model: str
+    embedding_model: str
+    metrics: list[RagMetricName] = Field(
+        default_factory=lambda: ["faithfulness", "context_precision", "answer_relevance"],
+        min_length=1,
+    )
+
+
+class AgentRuntimeSpec(BaseModel):
+    """Phase 9: planner/tool runtime knobs for `task_type=agent`.
+
+    The runtime drives a strict JSON action loop:
+    - {"action":"call_tool","tool":"...","args":{...}}
+    - {"action":"final_answer","answer":"..."}
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_steps: int = Field(default=6, ge=1, le=32)
+    tool_names: list[str] = Field(min_length=1)
+    planner_model: str | None = None
+
+
 class PromptSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,6 +116,15 @@ class PromptSpec(BaseModel):
     candidate: CandidateSpec
     judges: list[JudgeSpec] = Field(min_length=1)
     judge_policy: JudgePolicySpec
+    # Phase 8 RAG: optional. When the eval set contains any ``task_type=rag``
+    # case, both must be set; the EvaluatorRouter raises at dispatch time
+    # otherwise. Generic-only prompts leave both ``None``.
+    retriever: RetrieverSpec | None = None
+    rag_evaluator: RagEvaluatorSpec | None = None
+    # Phase 9 Agent runtime config. If omitted, `task_type=agent` cases
+    # remain unsupported and runner emits per-case unsupported_task_type
+    # records (same behavior as missing rag blocks for task_type=rag).
+    agent_runtime: AgentRuntimeSpec | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -77,6 +139,28 @@ class PromptSpec(BaseModel):
                 "  judge_policy: {mode: pointwise, k: 1}"
             )
         return data
+
+    @model_validator(mode="after")
+    def _rag_blocks_paired(self) -> PromptSpec:
+        if (self.retriever is None) != (self.rag_evaluator is None):
+            raise ValueError(
+                "prompt.yaml: `retriever:` and `rag_evaluator:` must be set "
+                "together (or both omitted). RAG cases need both; generic-only "
+                "prompts can omit both."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_runtime(self) -> PromptSpec:
+        if self.agent_runtime is None:
+            return self
+        cleaned = [t.strip() for t in self.agent_runtime.tool_names if t and t.strip()]
+        if not cleaned:
+            raise ValueError("prompt.yaml: agent_runtime.tool_names must contain at least one tool")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("prompt.yaml: agent_runtime.tool_names contains duplicates")
+        self.agent_runtime = self.agent_runtime.model_copy(update={"tool_names": cleaned})
+        return self
 
     def render_messages(self, case_input: dict[str, Any]) -> list[dict[str, str]]:
         """Render `candidate.user_template` against a case's `input` dict.

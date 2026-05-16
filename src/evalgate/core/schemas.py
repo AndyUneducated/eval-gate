@@ -53,6 +53,8 @@ class EvalCase(BaseModel):
     input: dict[str, Any]
     expected: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
+    retrieved_contexts: list[str] = Field(default_factory=list)
+    expected_trajectory: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     source_trace_id: str | None = None
     source_span_id: str | None = None
@@ -84,6 +86,12 @@ class EvalCaseOut(BaseModel):
     input: dict[str, Any]
     expected: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
+    # Phase 8: gold contexts for RAG cases (used as ragas reference_contexts).
+    # Empty list for generic / agent cases.
+    retrieved_contexts: list[str] = Field(default_factory=list)
+    # Phase 9: gold tool plan for agent cases. Every step is
+    # {"tool": "...", "args": {...}} and order matters.
+    expected_trajectory: list[dict[str, Any]] = Field(default_factory=list)
     source_trace_id: str | None = None
     source_span_id: str | None = None
     created_at: datetime
@@ -120,6 +128,10 @@ class EvalRecord(BaseModel):
     cost_usd: float = 0.0
     latency_ms: int = 0
     safety_violation: bool = False
+    # Phase 8 RAG: per-metric breakdown (e.g. faithfulness / context_precision /
+    # answer_relevance). None for generic / agent records. The gate report's
+    # quality axis surfaces a nested sub-axis when this is populated.
+    sub_metrics: dict[str, float] | None = None
 
 
 class AxisMetric(BaseModel):
@@ -133,6 +145,11 @@ class AxisMetric(BaseModel):
     ci_high: float | None = None
     significant: bool = False
     passed: bool = True
+    # Phase 8: nested per-sub-metric axes (only set for the quality axis when
+    # records carry `sub_metrics`). Each sub-metric is its own
+    # higher-is-better mean axis with bootstrap CI; quality.passed includes
+    # `all(sub.passed for sub in sub_metrics.values())`.
+    sub_metrics: dict[str, AxisMetric] | None = None
 
 
 class GateReport(BaseModel):

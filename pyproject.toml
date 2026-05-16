@@ -28,6 +28,9 @@ dependencies = [
     "protobuf>=5",
     "litellm>=1.50",
     "pyyaml>=6",
+    "ragas>=0.1.21,<0.3",
+    "datasets>=2.14",
+    "langchain-core>=0.2",
 ]
 
 [project.scripts]

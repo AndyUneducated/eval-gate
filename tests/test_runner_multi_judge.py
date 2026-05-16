@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from evalgate.eval_set import repository as set_repo
+from evalgate.evaluator import runner
 from evalgate.judge import persistence as judge_repo
-from evalgate.judge import runner
 
 _POINTWISE_YAML = """
 name: t

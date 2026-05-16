@@ -61,6 +61,8 @@ async def add_result(
     safety_violation: bool = False,
     judge_confidence: float | None = None,
     judge_raw: dict[str, Any] | None = None,
+    sub_metrics: dict[str, float] | None = None,
+    retrieved_contexts: list[str] | None = None,
 ) -> EvalResultRow:
     row = EvalResultRow(
         id=_new_id(),
@@ -75,6 +77,12 @@ async def add_result(
         safety_violation=bool(safety_violation),
         judge_confidence=judge_confidence,
         judge_raw=judge_raw,
+        sub_metrics=(
+            {k: float(v) for k, v in sub_metrics.items()} if sub_metrics is not None else None
+        ),
+        retrieved_contexts=(
+            [str(c) for c in retrieved_contexts] if retrieved_contexts is not None else None
+        ),
     )
     session.add(row)
     await session.commit()

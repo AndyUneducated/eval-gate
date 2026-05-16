@@ -38,6 +38,16 @@ def _summarize(
         return "All four axes within tolerance."
     failed = [axis.name for axis in axes if not axis.passed]
     parts = [f"Regressed axes: {', '.join(failed)}."]
+    # Phase 8: if quality regressed *because of* a RAG sub-metric, surface it.
+    quality = next((a for a in axes if a.name == "quality"), None)
+    if quality and quality.sub_metrics and not quality.passed:
+        bad_subs = [
+            f"{name} (delta={sub.delta:+.3f})"
+            for name, sub in quality.sub_metrics.items()
+            if not sub.passed
+        ]
+        if bad_subs:
+            parts.append(f"Quality sub-metrics regressed: {', '.join(bad_subs)}.")
     if attribution:
         worst_tag, worst = min(attribution.items(), key=lambda kv: kv[1]["delta"])
         if worst["delta"] < 0:

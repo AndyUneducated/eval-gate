@@ -1,0 +1,42 @@
+[
+  {
+    "id": "billing-invoice-cycle",
+    "text": "Acme bills monthly. Invoices are issued on the first business day of each month and are due 14 days later. Late payments incur a 1.5% monthly finance charge."
+  },
+  {
+    "id": "billing-prorations",
+    "text": "Mid-cycle plan upgrades are prorated on a per-day basis. The proration credit appears on the invoice that follows the upgrade. Downgrades take effect at the start of the next billing cycle and do not generate prorated credits."
+  },
+  {
+    "id": "billing-refunds",
+    "text": "Refunds are issued to the original payment method within 5 to 10 business days. Acme does not issue partial refunds for unused time on monthly plans, but annual plans are eligible for a prorated refund minus a 10% administrative fee."
+  },
+  {
+    "id": "billing-failed-payment",
+    "text": "If a payment fails, Acme retries the charge after 24 hours, then again after 72 hours. After three failed attempts the account is suspended; access is restored within one hour of a successful payment."
+  },
+  {
+    "id": "billing-tax",
+    "text": "Sales tax is calculated based on the billing address on file at invoice issuance. Customers with a valid VAT or resale certificate can submit it via the billing portal to be exempted from future invoices."
+  },
+  {
+    "id": "support-channels",
+    "text": "Acme support is available via email at support@acme.example and via in-app chat 24/7. Phone support is available to enterprise customers only, between 9am and 6pm in the customer's local timezone."
+  },
+  {
+    "id": "support-sla",
+    "text": "Response SLA: standard plan 24 business hours, growth plan 8 business hours, enterprise plan 1 hour for severity-1 incidents. SLA does not apply to feature requests or general questions."
+  },
+  {
+    "id": "auth-mfa",
+    "text": "Multi-factor authentication is mandatory for accounts on the growth and enterprise plans. Supported factors are TOTP authenticator apps and hardware security keys; SMS-based MFA was deprecated in 2024."
+  },
+  {
+    "id": "data-export",
+    "text": "Customers can request a data export from the account settings page. Exports are delivered as a downloadable ZIP within 24 hours and contain all user-generated content as JSON plus binary assets in their original formats."
+  },
+  {
+    "id": "account-deletion",
+    "text": "Account deletion is irreversible and removes all data within 30 days. During the 30-day window the account can be restored by contacting support. After 30 days, only billing records are retained for tax compliance reasons."
+  }
+]

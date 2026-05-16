@@ -11,6 +11,7 @@ objects.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any, Protocol
 
@@ -113,6 +114,55 @@ def _root_tags(spans: list[SpanLike]) -> list[str]:
     return []
 
 
+def _extract_expected_trajectory(spans: list[SpanLike]) -> list[dict[str, Any]]:
+    """Best-effort expected tool sequence for agent cases.
+
+    We treat every `kind=tool` span as one expected step in execution order.
+    Tool name comes from explicit attrs first, then falls back to span.name.
+    Args come from `tool.args` / `gen_ai.tool.args` when present.
+    """
+    out: list[dict[str, Any]] = []
+    for s in spans:
+        kind = (s.attributes.get("evalgate.kind") or s.kind or "").lower()
+        if kind != "tool":
+            continue
+        tool_name = _tool_name(s)
+        if not tool_name:
+            continue
+        out.append({"tool": tool_name, "args": _tool_args(s)})
+    return out
+
+
+def _tool_name(span: SpanLike) -> str | None:
+    attrs = span.attributes
+    for key in ("tool.name", "gen_ai.tool.name", "tool", "name"):
+        val = attrs.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    if isinstance(span.name, str) and span.name.strip():
+        return span.name.strip()
+    return None
+
+
+def _tool_args(span: SpanLike) -> dict[str, Any]:
+    attrs = span.attributes
+    for key in ("tool.args", "gen_ai.tool.args", "tool.arguments", "args"):
+        if key not in attrs:
+            continue
+        raw = attrs[key]
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw}
+            if isinstance(parsed, dict):
+                return parsed
+            return {"raw": parsed}
+    return {}
+
+
 def extract_case_from_trace(
     spans: list[SpanLike],
     *,
@@ -142,6 +192,7 @@ def extract_case_from_trace(
                 seen.add(t)
 
     task_type = task_type_override or _infer_task_type(ordered)
+    expected_trajectory = _extract_expected_trajectory(ordered)
 
     return {
         "task_type": str(task_type),
@@ -149,4 +200,5 @@ def extract_case_from_trace(
         "expected": _expected_payload(llm_span),
         "tags": tags,
         "source_span_id": llm_span.span_id,
+        "expected_trajectory": expected_trajectory,
     }

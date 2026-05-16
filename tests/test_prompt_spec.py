@@ -133,3 +133,49 @@ judge_policy: {}
 """
     with pytest.raises(ValidationError):
         load_prompt_spec(_write(tmp_path, body))
+
+
+def test_agent_runtime_requires_nonempty_tool_names(tmp_path):
+    body = (
+        _YAML
+        + """
+agent_runtime:
+  max_steps: 4
+  tool_names: []
+"""
+    )
+    with pytest.raises(ValidationError):
+        load_prompt_spec(_write(tmp_path, body))
+
+
+def test_agent_runtime_rejects_duplicate_tool_names(tmp_path):
+    body = (
+        _YAML
+        + """
+agent_runtime:
+  max_steps: 4
+  tool_names:
+    - lookup_invoice
+    - lookup_invoice
+"""
+    )
+    with pytest.raises(ValidationError):
+        load_prompt_spec(_write(tmp_path, body))
+
+
+def test_agent_runtime_accepts_planner_model_override(tmp_path):
+    body = (
+        _YAML
+        + """
+agent_runtime:
+  max_steps: 4
+  planner_model: ollama/qwen2.5:7b
+  tool_names:
+    - lookup_invoice
+    - fetch_policy
+"""
+    )
+    spec = load_prompt_spec(_write(tmp_path, body))
+    assert spec.agent_runtime is not None
+    assert spec.agent_runtime.planner_model == "ollama/qwen2.5:7b"
+    assert spec.agent_runtime.tool_names == ["lookup_invoice", "fetch_policy"]

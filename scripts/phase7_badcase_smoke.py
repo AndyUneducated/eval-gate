@@ -55,7 +55,7 @@ async def _seed_eval_sets(prompt_path: Path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from evalgate.eval_set import repository
-    from evalgate.judge import runner
+    from evalgate.evaluator import runner
 
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -101,6 +101,13 @@ def build_axis_metrics(
         else:
             regressed = significant and delta > 0
 
+        sub_metrics: dict[str, AxisMetric] | None = None
+        sub_regressed = False
+        if spec.name == "quality":
+            sub_metrics = _build_sub_metric_axes(baseline, candidate)
+            if sub_metrics:
+                sub_regressed = any(not s.passed for s in sub_metrics.values())
+
         metrics.append(
             AxisMetric(
                 name=spec.name,
@@ -110,7 +117,75 @@ def build_axis_metrics(
                 ci_low=ci_low,
                 ci_high=ci_high,
                 significant=significant,
-                passed=not regressed,
+                passed=not (regressed or sub_regressed),
+                sub_metrics=sub_metrics,
             )
         )
     return metrics
+
+
+def _build_sub_metric_axes(
+    baseline: Sequence[EvalRecord],
+    candidate: Sequence[EvalRecord],
+) -> dict[str, AxisMetric] | None:
+    """Phase 8 RAG: when records carry a ``sub_metrics`` dict, build one
+    higher-is-better mean axis per sub-metric and nest them under
+    ``quality.sub_metrics``.
+
+    Returns ``None`` when no record (in either side) carries sub-metrics
+    so the gate report stays unchanged for generic-only runs.
+
+    Records without a given sub-metric simply don't contribute to it —
+    we only aggregate over records where the metric is present. That
+    keeps mixed-task eval sets sensible (a generic case alongside a RAG
+    case won't pull faithfulness toward zero).
+    """
+    names: set[str] = set()
+    for rec in list(baseline) + list(candidate):
+        sm = rec.get("sub_metrics") if isinstance(rec, dict) else None
+        if isinstance(sm, dict):
+            names.update(str(k) for k in sm)
+    if not names:
+        return None
+
+    out: dict[str, AxisMetric] = {}
+    for name in sorted(names):
+        b_vals = _pluck_metric(baseline, name)
+        c_vals = _pluck_metric(candidate, name)
+        b_agg = _mean(b_vals)
+        c_agg = _mean(c_vals)
+        delta = c_agg - b_agg
+        if b_vals and c_vals:
+            boot = bootstrap_diff_ci(b_vals, c_vals)
+            ci_low: float | None = boot.ci_low
+            ci_high: float | None = boot.ci_high
+            significant = boot.significant
+        else:
+            ci_low = ci_high = None
+            significant = False
+        regressed = significant and delta < 0  # all RAG metrics: higher is better
+        out[name] = AxisMetric(
+            name=name,
+            baseline=b_agg,
+            candidate=c_agg,
+            delta=delta,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            significant=significant,
+            passed=not regressed,
+        )
+    return out
+
+
+def _pluck_metric(records: Sequence[EvalRecord], name: str) -> list[float]:
+    out: list[float] = []
+    for rec in records:
+        sm = rec.get("sub_metrics") if isinstance(rec, dict) else None
+        if not isinstance(sm, dict):
+            continue
+        if name in sm:
+            try:
+                out.append(float(sm[name]))
+            except (TypeError, ValueError):
+                continue
+    return out

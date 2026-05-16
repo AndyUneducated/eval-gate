@@ -86,6 +86,33 @@ def test_task_type_agent_when_multiple_tool_spans() -> None:
     assert case["task_type"] == TaskKind.agent.value
 
 
+def test_expected_trajectory_extracted_from_tool_spans() -> None:
+    base = datetime(2026, 5, 14)
+    spans = [
+        FakeSpan("root", start_time=base),
+        FakeSpan(
+            "tool-1",
+            name="lookup_invoice",
+            attributes={"evalgate.kind": "tool", "tool.args": {"invoice_id": "INV-42"}},
+            start_time=base + timedelta(milliseconds=10),
+            parent_span_id="root",
+        ),
+        FakeSpan(
+            "tool-2",
+            name="fetch_policy",
+            attributes={"evalgate.kind": "tool", "tool.args": '{"topic":"billing"}'},
+            start_time=base + timedelta(milliseconds=20),
+            parent_span_id="root",
+        ),
+        _llm_span("llm1", start_time=base + timedelta(milliseconds=30), parent_span_id="root"),
+    ]
+    case = extract_case_from_trace(spans)
+    assert case["expected_trajectory"] == [
+        {"tool": "lookup_invoice", "args": {"invoice_id": "INV-42"}},
+        {"tool": "fetch_policy", "args": {"topic": "billing"}},
+    ]
+
+
 def test_extra_tags_appended_dedup() -> None:
     spans = [
         FakeSpan("root", attributes={"evalgate.tag": "billing"}),

@@ -104,6 +104,16 @@ class EvalCaseRow(Base):
     input: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
     expected: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JsonType, default=list, nullable=False)
+    # Phase 8: gold contexts for RAG cases. Used by ragas as the
+    # `reference_contexts` for `context_precision_with_reference` /
+    # `context_recall`. For non-RAG cases this stays an empty list.
+    retrieved_contexts: Mapped[list[str]] = mapped_column(JsonType, default=list, nullable=False)
+    # Phase 9: gold action plan for agent cases. Every step is
+    # {"tool": str, "args": {...}} and order matters.
+    # Generic/RAG cases keep this as an empty list.
+    expected_trajectory: Mapped[list[dict[str, Any]]] = mapped_column(
+        JsonType, default=list, nullable=False
+    )
     source_trace_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     source_span_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -213,6 +223,14 @@ class EvalResultRow(Base):
     # Phase 17 forward-compat: populated later by MultiJudge / calibration.
     judge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     judge_raw: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
+    # Phase 8 RAG: per-metric breakdown (e.g. faithfulness / context_precision /
+    # answer_relevance for RAG; None for generic cases). The aggregated `score`
+    # column is the mean of these when set; sub_metrics let the gate report
+    # nest a sub-axis under quality.
+    sub_metrics: Mapped[dict[str, float] | None] = mapped_column(JsonType, nullable=True)
+    # Phase 8 RAG: contexts the candidate's retriever actually returned at
+    # run time. NULL for non-RAG cases. Audit signal for badcase finder.
+    retrieved_contexts: Mapped[list[str] | None] = mapped_column(JsonType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

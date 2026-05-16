@@ -123,3 +123,55 @@ def test_cli_eval_set_add_end_to_end(patched_session, capsys) -> None:
     show = json.loads(capsys.readouterr().out)
     assert show["name"] == "demo"
     assert len(show["cases"]) == 1
+
+
+def test_cli_eval_set_add_agent_case(patched_session, capsys) -> None:
+    assert cli.main(["eval-set", "create", "--name", "agent-demo"]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(
+        [
+            "eval-set",
+            "add-agent-case",
+            "--set",
+            "agent-demo",
+            "--question",
+            "why invoice is unpaid",
+            "--answer",
+            "because due date not reached",
+            "--step",
+            '{"tool":"lookup_invoice","args":{"invoice_id":"INV-42"}}',
+            "--step",
+            '{"tool":"fetch_policy","args":{"topic":"billing"}}',
+            "--tag",
+            "agent",
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["task_type"] == "agent"
+    assert out["expected_trajectory"] == [
+        {"tool": "lookup_invoice", "args": {"invoice_id": "INV-42"}},
+        {"tool": "fetch_policy", "args": {"topic": "billing"}},
+    ]
+
+
+def test_cli_eval_set_add_agent_case_rejects_bad_step_json(patched_session, capsys) -> None:
+    assert cli.main(["eval-set", "create", "--name", "agent-demo-2"]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(
+        [
+            "eval-set",
+            "add-agent-case",
+            "--set",
+            "agent-demo-2",
+            "--question",
+            "q",
+            "--step",
+            "{bad-json",
+        ]
+    )
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "trajectory_invalid"

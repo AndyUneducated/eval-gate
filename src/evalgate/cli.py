@@ -17,6 +17,9 @@ Subcommands:
     evalgate eval-set show --set <id-or-name>
         Dump set metadata + all its cases as JSON.
 
+    evalgate eval-set add-agent-case --set <id-or-name> --question "..." --step '{"tool":"...","args":{...}}'
+        Add a hand-authored agent-eval case with an expected trajectory.
+
     evalgate run --eval-set <id-or-name> --prompt path/to/prompt.yaml --out r.json
                  [--judge-model M] [--mock] [--limit N]
                  [--k K] [--concurrency N] [--policy-mode pointwise|pairwise]
@@ -60,8 +63,8 @@ from evalgate.badcase import repository as badcase_repo
 from evalgate.core.schemas import TaskKind
 from evalgate.db.session import SessionLocal
 from evalgate.eval_set import repository
+from evalgate.evaluator import runner as eval_runner
 from evalgate.gate.decision import build_gate_report
-from evalgate.judge import runner as judge_runner
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
@@ -117,10 +120,31 @@ def _case_to_dict(row) -> dict[str, Any]:
         "input": row.input,
         "expected": row.expected,
         "tags": list(row.tags or []),
+        "retrieved_contexts": list(row.retrieved_contexts or []),
+        "expected_trajectory": list(row.expected_trajectory or []),
         "source_trace_id": row.source_trace_id,
         "source_span_id": row.source_span_id,
         "created_at": row.created_at,
     }
+
+
+def _parse_step_json(values: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for idx, raw in enumerate(values):
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"--step[{idx}] is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"--step[{idx}] must be a JSON object")
+        tool = payload.get("tool")
+        args = payload.get("args", {})
+        if not isinstance(tool, str) or not tool.strip():
+            raise ValueError(f"--step[{idx}] missing non-empty string field `tool`")
+        if not isinstance(args, dict):
+            raise ValueError(f"--step[{idx}] field `args` must be an object")
+        out.append({"tool": tool, "args": args})
+    return out
 
 
 async def _with_session(fn: Callable[[AsyncSession], Awaitable[Any]]) -> Any:
@@ -165,6 +189,64 @@ def _cmd_eval_set_add(args: argparse.Namespace) -> int:
     return 1 if isinstance(result, dict) and "error" in result else 0
 
 
+def _cmd_eval_set_add_rag(args: argparse.Namespace) -> int:
+    """Add a hand-authored RAG case (question + gold answer + reference contexts).
+
+    Used by the Phase 8 demo seeder; for traces, ``eval-set add --from-trace``
+    still applies and now also carries any contexts ``case_extract`` recovers.
+    """
+
+    async def run(session: AsyncSession):
+        try:
+            set_id = await repository.resolve_set_id(session, args.set)
+            row = await repository.add_case(
+                session,
+                set_id=set_id,
+                task_type=TaskKind.rag,
+                input={"question": args.question},
+                expected={"answer": args.answer},
+                tags=list(args.tag or []),
+                retrieved_contexts=list(args.context or []),
+            )
+            return _case_to_dict(row)
+        except repository.EvalSetNotFoundError as exc:
+            return {"error": "eval_set_not_found", "detail": str(exc)}
+
+    result = asyncio.run(_with_session(run))
+    _print(result)
+    return 1 if isinstance(result, dict) and "error" in result else 0
+
+
+def _cmd_eval_set_add_agent(args: argparse.Namespace) -> int:
+    """Add a hand-authored Agent case with a gold expected trajectory."""
+
+    try:
+        expected_trajectory = _parse_step_json(list(args.step or []))
+    except ValueError as exc:
+        _print({"error": "trajectory_invalid", "detail": str(exc)})
+        return 2
+
+    async def run(session: AsyncSession):
+        try:
+            set_id = await repository.resolve_set_id(session, args.set)
+            row = await repository.add_case(
+                session,
+                set_id=set_id,
+                task_type=TaskKind.agent,
+                input={"question": args.question},
+                expected={"answer": args.answer} if args.answer else None,
+                tags=list(args.tag or []),
+                expected_trajectory=expected_trajectory,
+            )
+            return _case_to_dict(row)
+        except repository.EvalSetNotFoundError as exc:
+            return {"error": "eval_set_not_found", "detail": str(exc)}
+
+    result = asyncio.run(_with_session(run))
+    _print(result)
+    return 1 if isinstance(result, dict) and "error" in result else 0
+
+
 def _cmd_eval_set_show(args: argparse.Namespace) -> int:
     async def run(session: AsyncSession):
         try:
@@ -190,7 +272,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     async def run(session: AsyncSession):
         try:
-            result = await judge_runner.run_eval(
+            result = await eval_runner.run_eval(
                 session,
                 eval_set_id_or_name=args.eval_set,
                 prompt_path=str(args.prompt),
@@ -406,6 +488,55 @@ def _add_eval_set_subcommands(parent: argparse._SubParsersAction) -> None:
     show = sub.add_parser("show", help="Print an eval set and its cases.")
     show.add_argument("--set", required=True)
     show.set_defaults(func=_cmd_eval_set_show)
+
+    add_rag = sub.add_parser(
+        "add-rag-case",
+        help="Add a hand-authored RAG case (question / answer / reference contexts).",
+    )
+    add_rag.add_argument("--set", required=True, help="eval set id (UUID hex) or name")
+    add_rag.add_argument("--question", required=True)
+    add_rag.add_argument("--answer", required=True, help="gold answer (eval_case.expected.answer)")
+    add_rag.add_argument(
+        "--context",
+        action="append",
+        default=[],
+        help="reference context chunk (repeatable). Stored on eval_case.retrieved_contexts.",
+    )
+    add_rag.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        help="Tag to attach to the case (repeatable).",
+    )
+    add_rag.set_defaults(func=_cmd_eval_set_add_rag)
+
+    add_agent = sub.add_parser(
+        "add-agent-case",
+        help="Add a hand-authored Agent case (question / expected trajectory).",
+    )
+    add_agent.add_argument("--set", required=True, help="eval set id (UUID hex) or name")
+    add_agent.add_argument("--question", required=True)
+    add_agent.add_argument(
+        "--answer",
+        default=None,
+        help="Optional gold final answer (eval_case.expected.answer).",
+    )
+    add_agent.add_argument(
+        "--step",
+        action="append",
+        default=[],
+        help=(
+            "Expected trajectory step JSON (repeatable), e.g. "
+            '\'{"tool":"lookup_invoice","args":{"invoice_id":"INV-42"}}\''
+        ),
+    )
+    add_agent.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        help="Tag to attach to the case (repeatable).",
+    )
+    add_agent.set_defaults(func=_cmd_eval_set_add_agent)
 
 
 def main(argv: list[str] | None = None) -> int:
