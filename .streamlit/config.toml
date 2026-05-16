@@ -1,0 +1,6 @@
+# Non-interactive local dev: skip first-run email prompt (Streamlit 1.57+).
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
