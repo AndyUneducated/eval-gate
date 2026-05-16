@@ -8,6 +8,11 @@ Each axis specifies:
 Mean-aggregated axes use a bootstrap CI to decide significance; p95-aggregated
 axes use a simple threshold delta (significance bootstrapping for p95 is a
 follow-up — its statistical interpretation is different).
+
+Phase 8/10: any record may carry ``axis_breakdown[<axis>]`` (a per-metric
+dict). When present, each main axis grows nested ``sub_metrics`` axes — one
+per inner key — that share the parent axis's direction. ``passed`` for the
+parent axis is then ``main_passed AND all(sub.passed)``.
 """
 
 from __future__ import annotations
@@ -71,6 +76,16 @@ AXES: tuple[AxisSpec, ...] = (
 )
 
 
+# Which gate axis names get nested sub-metric axes from
+# ``record["axis_breakdown"][<name>]``. Each sub-axis inherits the parent
+# axis's direction (RAG quality metrics are higher_is_better; safety
+# rates are lower_is_better).
+_SUB_AXIS_PARENTS: dict[str, Direction] = {
+    "quality": "higher_is_better",
+    "safety": "lower_is_better",
+}
+
+
 def _aggregate(spec: AxisSpec, values: Sequence[float]) -> float:
     return _mean(values) if spec.aggregator == "mean" else _p95(values)
 
@@ -103,8 +118,13 @@ def build_axis_metrics(
 
         sub_metrics: dict[str, AxisMetric] | None = None
         sub_regressed = False
-        if spec.name == "quality":
-            sub_metrics = _build_sub_metric_axes(baseline, candidate)
+        if spec.name in _SUB_AXIS_PARENTS:
+            sub_metrics = _build_sub_metric_axes(
+                baseline,
+                candidate,
+                axis_name=spec.name,
+                direction=_SUB_AXIS_PARENTS[spec.name],
+            )
             if sub_metrics:
                 sub_regressed = any(not s.passed for s in sub_metrics.values())
 
@@ -127,31 +147,35 @@ def build_axis_metrics(
 def _build_sub_metric_axes(
     baseline: Sequence[EvalRecord],
     candidate: Sequence[EvalRecord],
+    *,
+    axis_name: str,
+    direction: Direction,
 ) -> dict[str, AxisMetric] | None:
-    """Phase 8 RAG: when records carry a ``sub_metrics`` dict, build one
-    higher-is-better mean axis per sub-metric and nest them under
-    ``quality.sub_metrics``.
+    """Phase 8/10: when records carry ``axis_breakdown[axis_name]``, build one
+    mean axis per inner key and nest them under the parent axis. Each sub-axis
+    inherits ``direction`` from the parent.
 
-    Returns ``None`` when no record (in either side) carries sub-metrics
-    so the gate report stays unchanged for generic-only runs.
+    Returns ``None`` when no record (in either side) carries breakdown for
+    this axis, so the gate report stays unchanged for runs that don't emit
+    that axis (e.g. generic-only runs without RAG or safety).
 
-    Records without a given sub-metric simply don't contribute to it —
-    we only aggregate over records where the metric is present. That
-    keeps mixed-task eval sets sensible (a generic case alongside a RAG
-    case won't pull faithfulness toward zero).
+    Records without a given sub-metric simply don't contribute to it — we
+    only aggregate over records where the metric is present. That keeps
+    mixed-task eval sets sensible (a generic case alongside a RAG case
+    won't pull faithfulness toward zero).
     """
     names: set[str] = set()
     for rec in list(baseline) + list(candidate):
-        sm = rec.get("sub_metrics") if isinstance(rec, dict) else None
-        if isinstance(sm, dict):
-            names.update(str(k) for k in sm)
+        bucket = _bucket(rec, axis_name)
+        if bucket:
+            names.update(str(k) for k in bucket)
     if not names:
         return None
 
     out: dict[str, AxisMetric] = {}
     for name in sorted(names):
-        b_vals = _pluck_metric(baseline, name)
-        c_vals = _pluck_metric(candidate, name)
+        b_vals = _pluck_metric(baseline, axis_name=axis_name, metric=name)
+        c_vals = _pluck_metric(candidate, axis_name=axis_name, metric=name)
         b_agg = _mean(b_vals)
         c_agg = _mean(c_vals)
         delta = c_agg - b_agg
@@ -163,7 +187,10 @@ def _build_sub_metric_axes(
         else:
             ci_low = ci_high = None
             significant = False
-        regressed = significant and delta < 0  # all RAG metrics: higher is better
+        if direction == "higher_is_better":
+            regressed = significant and delta < 0
+        else:
+            regressed = significant and delta > 0
         out[name] = AxisMetric(
             name=name,
             baseline=b_agg,
@@ -177,15 +204,29 @@ def _build_sub_metric_axes(
     return out
 
 
-def _pluck_metric(records: Sequence[EvalRecord], name: str) -> list[float]:
+def _bucket(rec: EvalRecord, axis_name: str) -> dict[str, Any] | None:
+    if not isinstance(rec, dict):
+        return None
+    breakdown = rec.get("axis_breakdown")
+    if not isinstance(breakdown, dict):
+        return None
+    inner = breakdown.get(axis_name)
+    return inner if isinstance(inner, dict) else None
+
+
+def _pluck_metric(
+    records: Sequence[EvalRecord],
+    *,
+    axis_name: str,
+    metric: str,
+) -> list[float]:
     out: list[float] = []
     for rec in records:
-        sm = rec.get("sub_metrics") if isinstance(rec, dict) else None
-        if not isinstance(sm, dict):
+        bucket = _bucket(rec, axis_name)
+        if bucket is None or metric not in bucket:
             continue
-        if name in sm:
-            try:
-                out.append(float(sm[name]))
-            except (TypeError, ValueError):
-                continue
+        try:
+            out.append(float(bucket[metric]))
+        except (TypeError, ValueError):
+            continue
     return out

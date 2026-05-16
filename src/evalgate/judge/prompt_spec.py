@@ -94,6 +94,66 @@ class RagEvaluatorSpec(BaseModel):
     )
 
 
+class PiiDetectorSpec(BaseModel):
+    """Phase 10: Presidio-driven PII detector knobs.
+
+    ``entities`` is the allow-list of Presidio recognizer types we run. The
+    defaults are all regex/pattern-based (no spaCy NER required), so the
+    pipeline works in pure-CI without downloading a language model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entities: list[str] = Field(
+        default_factory=lambda: [
+            "EMAIL_ADDRESS",
+            "PHONE_NUMBER",
+            "US_SSN",
+            "CREDIT_CARD",
+            "IP_ADDRESS",
+            "URL",
+            "IBAN_CODE",
+        ],
+        min_length=1,
+    )
+    # 0.4 catches Presidio's low-confidence phone matches (which it scores at
+    # exactly 0.4 for stand-alone digit groups). Bump per-prompt to 0.5+ to
+    # tighten precision; drop to 0.3 to also include weak URL/IP variants.
+    score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+
+
+class JailbreakDetectorSpec(BaseModel):
+    """Phase 10: keyword + optional LLM-classifier knobs.
+
+    - ``keywords``: when ``None``, the bundled default list is used. Set to a
+      custom list to override; pass ``[]`` to disable the keyword path.
+    - ``classifier_model``: when ``None``, only the keyword path runs and
+      compliance falls back to a refusal heuristic. When set (and not in
+      ``EVALGATE_MOCK_LLM=1``), every output where an attempt fired is
+      classified by a tiny LiteLLM call.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keywords: list[str] | None = None
+    classifier_model: str | None = "ollama/qwen2.5:7b"
+
+
+class SafetySpec(BaseModel):
+    """Phase 10: top-level safety scoring config.
+
+    Attached to every ``PromptSpec`` (default-on). The runner builds a
+    :class:`SafetyPipeline` once per run from this block and merges
+    ``axis_breakdown["safety"]`` into every outcome before persistence.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    pii: PiiDetectorSpec = Field(default_factory=PiiDetectorSpec)
+    jailbreak: JailbreakDetectorSpec = Field(default_factory=JailbreakDetectorSpec)
+
+
 class AgentRuntimeSpec(BaseModel):
     """Phase 9: planner/tool runtime knobs for `task_type=agent`.
 
@@ -125,6 +185,9 @@ class PromptSpec(BaseModel):
     # remain unsupported and runner emits per-case unsupported_task_type
     # records (same behavior as missing rag blocks for task_type=rag).
     agent_runtime: AgentRuntimeSpec | None = None
+    # Phase 10 Safety config. Default-on with default detectors; set
+    # ``safety.enabled=false`` to skip the pipeline entirely.
+    safety: SafetySpec = Field(default_factory=SafetySpec)
 
     @model_validator(mode="before")
     @classmethod

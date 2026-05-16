@@ -16,7 +16,7 @@ Usage::
 
 The script exits non-zero on any of:
 - ragas didn't return all three sub-metrics
-- gate report quality axis missing nested ``sub_metrics``
+- gate report quality axis missing nested sub-axes (``axis_breakdown.quality``)
 - baseline mean_score is not >= candidate mean_score (only enforced in
   real-LLM mode; mocked runs bypass this since both runs collapse to
   the same constant score).
@@ -100,15 +100,16 @@ async def _amain() -> int:
     candidate = await _run_one(database_url, set_id, CANDIDATE_YAML)
     print(f"  mean_score={candidate['mean_score']:.3f}")
 
-    # Sanity: every record carries the three sub-metrics.
+    # Sanity: every record carries the three quality sub-metrics under
+    # axis_breakdown.quality.
     expected_metrics = {"faithfulness", "context_precision", "answer_relevance"}
     for label, payload in (("baseline", baseline), ("candidate", candidate)):
         for rec in payload["records"]:
-            sm = rec.get("sub_metrics") or {}
+            sm = (rec.get("axis_breakdown") or {}).get("quality") or {}
             if set(sm) != expected_metrics:
                 print(
-                    f"FAIL: {label} record {rec.get('case_id')} sub_metrics={sm} "
-                    f"(want {expected_metrics})",
+                    f"FAIL: {label} record {rec.get('case_id')} "
+                    f"axis_breakdown.quality={sm} (want {expected_metrics})",
                     file=sys.stderr,
                 )
                 return 2

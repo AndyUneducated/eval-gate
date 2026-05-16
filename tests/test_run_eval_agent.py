@@ -98,16 +98,18 @@ async def test_run_eval_agent_persists_submetrics_and_calls(db_session_factory, 
     assert result.total_cases == 2
     assert len(result.records) == 2
     for rec in result.records:
-        assert rec.sub_metrics is not None
-        assert set(rec.sub_metrics) == {"tool_call_accuracy", "step_wise_success"}
+        assert rec.axis_breakdown is not None
+        quality = rec.axis_breakdown["quality"]
+        assert set(quality) == {"tool_call_accuracy", "step_wise_success"}
         assert rec.score == pytest.approx(
-            (rec.sub_metrics["tool_call_accuracy"] + rec.sub_metrics["step_wise_success"]) / 2
+            (quality["tool_call_accuracy"] + quality["step_wise_success"]) / 2
         )
 
     async with db_session_factory() as session:
         results = await judge_repo.list_results(session, result.run_id)
     assert len(results) == 2
-    assert all(r.sub_metrics is not None for r in results)
+    assert all(r.axis_breakdown is not None for r in results)
+    assert all("quality" in (r.axis_breakdown or {}) for r in results)
     assert all(r.judge_raw is not None and "actual_trajectory" in r.judge_raw for r in results)
 
 

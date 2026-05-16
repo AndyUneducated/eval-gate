@@ -70,10 +70,10 @@ async def _amain() -> int:
     expected_keys = {"tool_call_accuracy", "step_wise_success"}
     for label, payload in (("baseline", baseline), ("candidate", candidate)):
         for rec in payload["records"]:
-            sub = rec.get("sub_metrics") or {}
+            sub = (rec.get("axis_breakdown") or {}).get("quality") or {}
             if set(sub) != expected_keys:
                 print(
-                    f"FAIL {label}: bad sub_metrics keys {set(sub)} != {expected_keys}",
+                    f"FAIL {label}: bad axis_breakdown.quality keys {set(sub)} != {expected_keys}",
                     file=sys.stderr,
                 )
                 return 2
@@ -97,9 +97,10 @@ async def _amain() -> int:
         base = by_case_a.get(case_id)
         if not base:
             continue
+        rec_sub = (rec.get("axis_breakdown") or {}).get("quality") or {}
+        base_sub = (base.get("axis_breakdown") or {}).get("quality") or {}
         if rec.get("score", 0.0) < base.get("score", 0.0) and (
-            (rec.get("sub_metrics") or {}).get("step_wise_success", 0.0)
-            < (base.get("sub_metrics") or {}).get("step_wise_success", 0.0)
+            rec_sub.get("step_wise_success", 0.0) < base_sub.get("step_wise_success", 0.0)
         ):
             found = True
             break

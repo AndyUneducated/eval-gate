@@ -26,7 +26,7 @@ class AgentTrajectoryEvaluator:
                 output_text="",
                 cost_usd=0.0,
                 latency_ms=0,
-                sub_metrics={"tool_call_accuracy": 0.0, "step_wise_success": 0.0},
+                axis_breakdown={"quality": {"tool_call_accuracy": 0.0, "step_wise_success": 0.0}},
                 judge_raw={"error": "missing_expected_trajectory"},
                 reason="agent case requires non-empty expected_trajectory",
                 error=True,
@@ -109,9 +109,11 @@ class AgentTrajectoryEvaluator:
             cost_usd=0.0,
             latency_ms=0,
             confidence=step_wise_success,
-            sub_metrics={
-                "tool_call_accuracy": tool_call_accuracy,
-                "step_wise_success": step_wise_success,
+            axis_breakdown={
+                "quality": {
+                    "tool_call_accuracy": tool_call_accuracy,
+                    "step_wise_success": step_wise_success,
+                }
             },
             raw_calls=raw_calls,
             judge_raw=judge_raw,

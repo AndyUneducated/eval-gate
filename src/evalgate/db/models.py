@@ -223,11 +223,15 @@ class EvalResultRow(Base):
     # Phase 17 forward-compat: populated later by MultiJudge / calibration.
     judge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     judge_raw: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
-    # Phase 8 RAG: per-metric breakdown (e.g. faithfulness / context_precision /
-    # answer_relevance for RAG; None for generic cases). The aggregated `score`
-    # column is the mean of these when set; sub_metrics let the gate report
-    # nest a sub-axis under quality.
-    sub_metrics: Mapped[dict[str, float] | None] = mapped_column(JsonType, nullable=True)
+    # Phase 10 (was Phase 8 ``sub_metrics``): per-axis, per-metric breakdown.
+    # Outer key is a gate axis name (``quality`` / ``safety``); inner dict is
+    # the per-metric value. RAG fills ``quality`` with ragas metrics; agent
+    # fills ``quality`` with tool_call_accuracy/step_wise_success; the safety
+    # pipeline fills ``safety`` with PII / jailbreak rates. ``NULL`` for plain
+    # generic results that don't break the score down.
+    axis_breakdown: Mapped[dict[str, dict[str, float]] | None] = mapped_column(
+        JsonType, nullable=True
+    )
     # Phase 8 RAG: contexts the candidate's retriever actually returned at
     # run time. NULL for non-RAG cases. Audit signal for badcase finder.
     retrieved_contexts: Mapped[list[str] | None] = mapped_column(JsonType, nullable=True)

@@ -9,8 +9,12 @@ that don't care about streaming. What changed:
   :class:`evalgate.evaluator.generic.GenericEvaluator`.
 - Per-case dispatch goes through :class:`EvaluatorRouter`, so RAG (and
   later Agent) cases land in their own evaluator.
-- Persistence now writes ``sub_metrics`` and ``retrieved_contexts``
-  (Phase 8 columns) when the evaluator returns them.
+- Persistence now writes ``axis_breakdown`` and ``retrieved_contexts``
+  (Phase 8/10 columns) when the evaluator returns them.
+- Phase 10: a ``SafetyPipeline.augment`` hook runs after ``evaluator.evaluate``
+  and merges ``axis_breakdown["safety"]`` plus a derived ``safety_violation``
+  before persistence, so generic / rag / agent paths all carry the safety
+  axis without each evaluator caring.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from evalgate.evaluator.base import EvaluationOutcome, UnsupportedTaskTypeError
 from evalgate.evaluator.router import EvaluatorRouter, build_router
 from evalgate.judge import persistence
 from evalgate.judge.prompt_spec import PromptSpec, hash_prompt, load_prompt_spec
+from evalgate.safety.pipeline import SafetyPipeline, build_safety_pipeline
 
 
 @dataclass
@@ -66,7 +71,7 @@ async def _persist_outcome(
         safety_violation=outcome.safety_violation,
         judge_confidence=outcome.confidence,
         judge_raw=outcome.judge_raw,
-        sub_metrics=outcome.sub_metrics,
+        axis_breakdown=outcome.axis_breakdown,
         retrieved_contexts=outcome.retrieved_contexts,
     )
     if outcome.raw_calls:
@@ -83,8 +88,14 @@ async def iter_eval(
     router: EvaluatorRouter,
     mock: bool = False,
     limit: int | None = None,
+    safety_pipeline: SafetyPipeline | None = None,
 ) -> AsyncIterator[EvalRecord]:
-    """Yield one ``EvalRecord`` per case, persisting along the way."""
+    """Yield one ``EvalRecord`` per case, persisting along the way.
+
+    ``safety_pipeline`` is the Phase 10 hook. ``run_eval`` builds it once per
+    run from ``spec.safety``; passing ``None`` disables safety scoring entirely
+    (useful for tests that don't care).
+    """
     cases = await eval_set_repo.list_cases(session, eval_set_id)
     if limit is not None:
         cases = cases[:limit]
@@ -107,6 +118,9 @@ async def iter_eval(
         else:
             outcome = await evaluator.evaluate(case, mock=mock)
 
+        if safety_pipeline is not None:
+            outcome = await safety_pipeline.augment(case, outcome, mock=mock)
+
         result_row = await _persist_outcome(
             session,
             run_id=run_id,
@@ -122,7 +136,7 @@ async def iter_eval(
             cost_usd=outcome.cost_usd,
             latency_ms=outcome.latency_ms,
             safety_violation=outcome.safety_violation,
-            sub_metrics=outcome.sub_metrics,
+            axis_breakdown=outcome.axis_breakdown,
             judge_confidence=outcome.confidence,
             error=outcome.error,
             error_kind=outcome.error_kind,
@@ -164,6 +178,7 @@ async def run_eval(
 
     use_mock = _mock_enabled(mock)
     router = build_router(spec, mock=use_mock)
+    safety_pipeline = build_safety_pipeline(spec, mock=use_mock)
 
     run = await persistence.create_run(
         session,
@@ -183,6 +198,7 @@ async def run_eval(
         router=router,
         mock=use_mock,
         limit=limit,
+        safety_pipeline=safety_pipeline,
     ):
         records.append(rec)
 

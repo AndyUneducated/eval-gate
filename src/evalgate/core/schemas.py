@@ -128,10 +128,14 @@ class EvalRecord(BaseModel):
     cost_usd: float = 0.0
     latency_ms: int = 0
     safety_violation: bool = False
-    # Phase 8 RAG: per-metric breakdown (e.g. faithfulness / context_precision /
-    # answer_relevance). None for generic / agent records. The gate report's
-    # quality axis surfaces a nested sub-axis when this is populated.
-    sub_metrics: dict[str, float] | None = None
+    # Phase 10 refactor (was Phase 8 ``sub_metrics``): per-axis, per-metric
+    # breakdown. Outer key is the gate axis name (``quality`` / ``safety``);
+    # inner dict is the per-metric value (RAG: faithfulness/...; safety:
+    # pii_input_rate/pii_output_leak_rate/jailbreak_attempt_rate/
+    # jailbreak_compliance_rate). ``None`` for plain generic records that
+    # don't break the score down. The gate report's matching main axis
+    # surfaces a nested sub-axis per inner key when this is populated.
+    axis_breakdown: dict[str, dict[str, float]] | None = None
 
 
 class AxisMetric(BaseModel):
@@ -145,10 +149,10 @@ class AxisMetric(BaseModel):
     ci_high: float | None = None
     significant: bool = False
     passed: bool = True
-    # Phase 8: nested per-sub-metric axes (only set for the quality axis when
-    # records carry `sub_metrics`). Each sub-metric is its own
-    # higher-is-better mean axis with bootstrap CI; quality.passed includes
-    # `all(sub.passed for sub in sub_metrics.values())`.
+    # Phase 8/10: nested per-sub-metric axes. Currently set for ``quality``
+    # (from RAG ragas metrics) and ``safety`` (from PII/jailbreak detectors).
+    # Each sub-metric is its own mean axis with bootstrap CI; the parent
+    # axis ``passed = main passed AND all(sub.passed for sub in sub_metrics)``.
     sub_metrics: dict[str, AxisMetric] | None = None
 
 

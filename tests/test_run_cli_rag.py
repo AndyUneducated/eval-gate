@@ -3,8 +3,8 @@
 We seed a tiny RAG eval set, drive the runner directly (the CLI is just
 a thin wrapper), and stub the ragas scorer + candidate call so the test
 doesn't need a live model. Then assert the records dict carries
-``sub_metrics`` and feeds straight into ``build_gate_report`` to surface
-the nested quality breakdown.
+``axis_breakdown["quality"]`` and feeds straight into ``build_gate_report``
+to surface the nested quality breakdown.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def _stub_ragas(monkeypatch, sub_metric_values: dict[str, float]):
 
 
 @pytest.mark.asyncio
-async def test_run_eval_rag_emits_sub_metrics_and_feeds_gate(
+async def test_run_eval_rag_emits_axis_breakdown_and_feeds_gate(
     monkeypatch, db_session_factory, tmp_path: Path
 ):
     corpus_path = _corpus(tmp_path)
@@ -158,7 +158,8 @@ async def test_run_eval_rag_emits_sub_metrics_and_feeds_gate(
     candidate = [r.model_dump() for r in candidate_result.records]
 
     assert all(
-        set(r["sub_metrics"] or {}) == {"faithfulness", "context_precision", "answer_relevance"}
+        set((r["axis_breakdown"] or {}).get("quality") or {})
+        == {"faithfulness", "context_precision", "answer_relevance"}
         for r in baseline + candidate
     )
 
@@ -178,11 +179,12 @@ async def test_run_eval_rag_emits_sub_metrics_and_feeds_gate(
 
 
 @pytest.mark.asyncio
-async def test_run_eval_rag_persists_sub_metrics_and_retrieved_contexts(
+async def test_run_eval_rag_persists_axis_breakdown_and_retrieved_contexts(
     monkeypatch, db_session_factory, tmp_path: Path
 ):
-    """Side-effect contract: eval_results rows carry sub_metrics + the
-    runtime retrieved_contexts the candidate consumed."""
+    """Side-effect contract: eval_results rows carry ``axis_breakdown`` (with
+    a ``quality`` bucket) + the runtime retrieved_contexts the candidate
+    consumed."""
     from evalgate.judge import persistence as judge_repo
 
     corpus_path = _corpus(tmp_path)
@@ -206,10 +208,21 @@ async def test_run_eval_rag_persists_sub_metrics_and_retrieved_contexts(
 
     assert len(results) == 3
     for r in results:
-        assert r.sub_metrics == {
+        assert isinstance(r.axis_breakdown, dict)
+        assert r.axis_breakdown["quality"] == {
             "faithfulness": 0.7,
             "context_precision": 0.6,
             "answer_relevance": 0.8,
         }
+        # Phase 10 safety pipeline runs on the candidate output too — clean
+        # ragas-mock answers contain no PII / jailbreak signals, so all four
+        # rates are 0.0 but the bucket still exists.
+        assert set(r.axis_breakdown["safety"]) == {
+            "pii_input_rate",
+            "pii_output_leak_rate",
+            "jailbreak_attempt_rate",
+            "jailbreak_compliance_rate",
+        }
+        assert all(v == 0.0 for v in r.axis_breakdown["safety"].values())
         assert isinstance(r.retrieved_contexts, list)
         assert len(r.retrieved_contexts) == 2  # top_k = 2 from YAML

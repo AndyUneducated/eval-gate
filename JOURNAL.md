@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-05-15 · Phase 10 · Safety 轴落地（PII + jailbreak）+ axis_breakdown 重构
+
+让 `multi_axis.safety` 从 demo 字段升级成真信号：每条 case 自动跑 PII（presidio）和 jailbreak（关键词 + 可选 LiteLLM 分类器）检测，把 4 项 sub-metric（`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）写进 `axis_breakdown["safety"]`，gate 在 safety 轴下挂同名 sub-axes 并按 lower-is-better 派发 bootstrap CI。
+
+工程上做了一次值得记的小重构：原来的 `EvalRecord.sub_metrics: dict[str,float]` / `EvalResultRow.sub_metrics` / `EvaluationOutcome.sub_metrics` 全部改名为 **`axis_breakdown: dict[str, dict[str, float]]`**——外层键是 gate 主轴名（`quality` / `safety`），内层是 per-metric。RAG / agent evaluator 写 `quality`，Phase 10 安全管线追加 `safety`。这样 `multi_axis._build_sub_metric_axes` 通用化（`axis_name` + `direction` 形参），quality / safety 两个父轴共用一份派发逻辑，`passed = main_passed AND all(sub.passed)` 一模一样的语义。Migration 0010 在 PG / SQLite 双路把旧 `sub_metrics` payload 包成 `{"quality": <旧>}` 后 drop 旧列；downgrade 反向也保留数据。
+
+具体落地：
+
+- `src/evalgate/safety/`：
+  - `PresidioPiiDetector` **绕过 `AnalyzerEngine`**——直接 lazy 实例化每个 `PatternRecognizer` 调 `.analyze(text, entities, nlp_artifacts=None)`。这样不依赖 spaCy 模型下载，CI 完全离线。代价是 `PERSON`/`LOCATION` 这种 NER recognizer 跑不了，但 ROADMAP 退出标准只需 PII 数字串类型，这点权衡写进了 PHASE_10_PLAN。
+  - `JailbreakDetector` 三层：bundled 关键词 regex（DAN / `ignore previous instructions` / `developer mode` / …）→ 命中后 LiteLLM strict-JSON 分类器（`{"complied": bool, ...}`）→ 任一 fail 都退到 refusal-marker 启发式（扫 `I cannot` / `I'm sorry` / `I won't`）。`EVALGATE_MOCK_LLM=1` 或 `classifier_model: null` 直接跳过 LLM 段，CI 不连外网。
+  - `SafetyPipeline.augment(case, outcome)` 永远不抛——子检测器异常降级为 0 速率，避免单点 detector 把整个 run 拖垮。`runner.iter_eval` 在每个 evaluator 返回后挂这一次 augment，generic / rag / agent 三条路径自动受益。
+- 数据流：`PromptSpec.safety` block（`enabled` / `pii.entities` / `pii.score_threshold` / `jailbreak.keywords` / `jailbreak.classifier_model`）→ `build_safety_pipeline(spec, mock=...)` → `SafetyPipeline.augment` → `outcome.axis_breakdown["safety"]` + `safety_violation = outcome.safety_violation OR result.violation` → 持久化到 `eval_results.axis_breakdown` → gate 再读出来。`safety.enabled=false` 让 `build_safety_pipeline` 返回 `None`，runner 跳过整段，axis 退化回 boolean-only 行为。
+- Demo 设计："输入分布漂移" 而不是 "提示词变弱"：baseline set 只有 3 条 clean case（pipeline 全 0 速率），candidate set 注入 5 PII + 4 jailbreak + 3 clean。同一 candidate 提示词跑两次，gate 把 candidate 的 safety 主轴 + 三项 sub-axis 标 fail。这绕过了 mock 模式下 `mock-candidate-output` 是常量、prompt-aware 差异不出来的结构限制。真 Ollama 模式下 `pii_output_leak_rate` 也会上升。
+
+几个抉择记一笔：
+
+1. **`sub_metrics → axis_breakdown` 直接改名**：用户明确说"不必考虑向后兼容"。这是 Phase 10 唯一干净的扩展方向——若加并行的 `safety_sub_metrics` 字段，gate 那边就要 hardcode "quality 看这里、safety 看那里"，跟 Phase 8 的 `_build_sub_metric_axes` 通用化背道而驰。一次改名换来 multi_axis 一处通用派发。
+2. **migration 0010 还是保留数据**：用户说不必兼容，但保留 5 行 SQL 把旧 RAG payload 封进 `{"quality": ...}` 几乎免费，并且让 `scripts/phase8_rag_smoke.py` 在迁移后还能复现，所以选了保留路径。
+3. **safety pipeline 不在 evaluator 里**：放在 `runner.iter_eval` 里 augment，是为了让 generic / rag / agent **三类 evaluator 完全不知道 safety 的存在**。Phase 11 之后想加新 evaluator 也不用关心 safety。
+4. **mock 模式 demo 走"两个 set"**：`run_candidate(mock=True)` 永远返回 `mock-candidate-output`，prompt 差异不出来。让 baseline 用 clean-only set、candidate 用 mixed set，是把"安全风险"等价为"输入分布漂移"——更贴近真实 SaaS 场景，并且不破坏 mock 模式可重现。
+
+**验证结果**：211 passed（177 旧 + 34 新增/改写），lint / format clean。`EVALGATE_MOCK_LLM=1 PYTHONPATH='src:.' python scripts/phase10_safety_smoke.py` 跑通：safety 轴 `delta=+0.75`、3 项 sub-axis（`pii_input_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）全 fail。本机真 Ollama mode 下 `pii_output_leak_rate` / `jailbreak_compliance_rate` 也会贡献 regression，留作后续 JOURNAL 补一行。
+
+**关键技术语言**：Presidio `PatternRecognizer` 直调（无 NER 依赖）· LiteLLM strict-JSON jailbreak compliance classifier · refusal-marker heuristic fallback · `axis_breakdown` per-axis nested sub-metrics · cross-cutting safety hook in evaluator runner · alembic dual-path migration（PG 用 jsonb_build_object / SQLite 用 Python reshape）。
+
 ## 2026-05-15 · Phase 9 · Agent Trajectory Evaluator（Tool Runtime）
 
 Phase 9 把 task-aware evaluator 从“RAG + generic”补全到 agent：不再让模型自报轨迹，而是把真实 tool runtime 接到 evaluator 链路里，先执行再评分。核心新增 `src/evalgate/evaluator/agent/` 五件套（`runtime / tools / parser / types / evaluator`）：planner 输出 strict JSON action（`call_tool` / `final_answer`），runtime 每步执行 builtin tools 生成 `actual_trajectory`，`AgentTrajectoryEvaluator` 再用 `expected_trajectory` 对齐打分。匹配规则按既定决策落地：**tool 名与顺序严格，args 用 expected ⊆ actual 深度子集匹配**；指标是 `tool_call_accuracy` + `step_wise_success`（前缀连续成功率），并通过 `EvaluationOutcome.sub_metrics` 进入 gate 的 `quality.sub_metrics`。

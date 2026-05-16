@@ -42,7 +42,7 @@ async def test_missing_expected_trajectory_is_error():
     out = await evaluator.evaluate(_Case(expected_trajectory=[]))
     assert out.error is True
     assert out.error_kind == "missing_expected_trajectory"
-    assert out.sub_metrics == {"tool_call_accuracy": 0.0, "step_wise_success": 0.0}
+    assert out.axis_breakdown == {"quality": {"tool_call_accuracy": 0.0, "step_wise_success": 0.0}}
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_perfect_match_scores_one(monkeypatch):
     out = await evaluator.evaluate(case)
     assert out.error is False
     assert out.score == pytest.approx(1.0)
-    assert out.sub_metrics == {"tool_call_accuracy": 1.0, "step_wise_success": 1.0}
+    assert out.axis_breakdown == {"quality": {"tool_call_accuracy": 1.0, "step_wise_success": 1.0}}
     assert out.output_text == "ok"
 
 
@@ -100,9 +100,10 @@ async def test_middle_step_mismatch_drops_step_wise_success(monkeypatch):
     )
     out = await evaluator.evaluate(case)
     assert out.error is False
-    assert out.sub_metrics is not None
-    assert out.sub_metrics["tool_call_accuracy"] == pytest.approx(0.5)
-    assert out.sub_metrics["step_wise_success"] == pytest.approx(0.5)
+    assert out.axis_breakdown is not None
+    quality = out.axis_breakdown["quality"]
+    assert quality["tool_call_accuracy"] == pytest.approx(0.5)
+    assert quality["step_wise_success"] == pytest.approx(0.5)
     assert out.score == pytest.approx(0.5)
     assert out.judge_raw is not None
     assert out.judge_raw["mismatch_reasons"]

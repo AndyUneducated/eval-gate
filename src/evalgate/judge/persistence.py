@@ -22,6 +22,19 @@ def _new_id() -> str:
     return uuid4().hex
 
 
+def _normalise_axis_breakdown(
+    breakdown: dict[str, dict[str, float]] | None,
+) -> dict[str, dict[str, float]] | None:
+    if breakdown is None:
+        return None
+    cleaned: dict[str, dict[str, float]] = {}
+    for axis, metrics in breakdown.items():
+        if not isinstance(metrics, dict):
+            continue
+        cleaned[str(axis)] = {str(k): float(v) for k, v in metrics.items()}
+    return cleaned or None
+
+
 async def create_run(
     session: AsyncSession,
     *,
@@ -61,7 +74,7 @@ async def add_result(
     safety_violation: bool = False,
     judge_confidence: float | None = None,
     judge_raw: dict[str, Any] | None = None,
-    sub_metrics: dict[str, float] | None = None,
+    axis_breakdown: dict[str, dict[str, float]] | None = None,
     retrieved_contexts: list[str] | None = None,
 ) -> EvalResultRow:
     row = EvalResultRow(
@@ -77,9 +90,7 @@ async def add_result(
         safety_violation=bool(safety_violation),
         judge_confidence=judge_confidence,
         judge_raw=judge_raw,
-        sub_metrics=(
-            {k: float(v) for k, v in sub_metrics.items()} if sub_metrics is not None else None
-        ),
+        axis_breakdown=_normalise_axis_breakdown(axis_breakdown),
         retrieved_contexts=(
             [str(c) for c in retrieved_contexts] if retrieved_contexts is not None else None
         ),

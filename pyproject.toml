@@ -31,6 +31,7 @@ dependencies = [
     "ragas>=0.1.21,<0.3",
     "datasets>=2.14",
     "langchain-core>=0.2",
+    "presidio-analyzer>=2.2,<3",
 ]
 
 [project.scripts]

@@ -16,7 +16,7 @@ Pipeline per case:
 5. Pack everything into an :class:`EvaluationOutcome`. ``score`` is the
    simple mean of the per-metric values (so a RAG case still has a
    single quality scalar for bootstrap-CI on the gate's quality axis);
-   ``sub_metrics`` carries the breakdown.
+   ``axis_breakdown["quality"]`` carries the per-ragas-metric breakdown.
 
 We deliberately re-do the dataset-of-one each call rather than batching
 across cases. The runner is sequential per case (Phase 5 decision) and
@@ -152,7 +152,7 @@ class RagEvaluator:
             cost_usd=candidate.cost_usd,
             latency_ms=candidate.latency_ms,
             confidence=confidence,
-            sub_metrics=sub_metrics,
+            axis_breakdown={"quality": dict(sub_metrics)},
             retrieved_contexts=contexts,
             raw_calls=raw_calls,
             judge_raw={

@@ -23,7 +23,7 @@ and **blocks merges** when a four-axis gate trips:
 - **quality** — pass rate, with bootstrap-CI significance to defeat stochastic-eval noise
 - **cost** — token-spend regression
 - **latency** — p95 latency regression
-- **safety** — PII / jailbreak violation rate
+- **safety** — PII (Presidio) and jailbreak (keyword + LLM-classifier) violation rates, broken out into four sub-axes (`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`)
 
 Regressions are attributed by `tag` / `intent` so the report says
 *"billing intent dropped 8 pts"* instead of *"pass rate dropped 0.5%"*.

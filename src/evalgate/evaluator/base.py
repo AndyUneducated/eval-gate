@@ -41,8 +41,12 @@ class EvaluationOutcome:
     Field invariants:
 
     - ``score`` is always in [0, 1] (clamping is the evaluator's job).
-    - ``sub_metrics`` is ``None`` for evaluators that don't break the
-      score down (generic); RAG fills it with one entry per ragas metric.
+    - ``axis_breakdown`` is ``None`` for evaluators that don't break the
+      score down (generic). RAG fills ``axis_breakdown["quality"]`` with
+      one entry per ragas metric; agent fills the same key with
+      ``tool_call_accuracy`` / ``step_wise_success``. The Phase 10 safety
+      pipeline merges in ``axis_breakdown["safety"]`` after the evaluator
+      returns, so evaluators never need to know about the safety axis.
     - ``raw_calls`` is the per-LLM-call audit trail that becomes one row
       in ``eval_judge_calls`` each. RAG evaluators emit one record per
       metric (``judge_model = "ragas:<metric_name>"``).
@@ -57,7 +61,7 @@ class EvaluationOutcome:
     cost_usd: float
     latency_ms: int
     confidence: float | None = None
-    sub_metrics: dict[str, float] | None = None
+    axis_breakdown: dict[str, dict[str, float]] | None = None
     retrieved_contexts: list[str] | None = None
     raw_calls: list[JudgeCallRecord] = field(default_factory=list)
     judge_raw: dict[str, Any] | None = None

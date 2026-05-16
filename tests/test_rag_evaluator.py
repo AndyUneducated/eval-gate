@@ -6,7 +6,7 @@ adapter already covers. Instead we patch the scorer at its boundary so
 the test focuses on:
 
 - the retriever→candidate→ragas chain runs in order,
-- the ragas dict turns into an EvaluationOutcome with ``sub_metrics``
+- the ragas dict turns into an EvaluationOutcome with ``axis_breakdown``
   + composite score (mean) + a JudgeCallRecord per metric,
 - failure modes (retrieve / candidate / ragas) become per-case error
   outcomes rather than raising.
@@ -129,10 +129,12 @@ async def test_rag_evaluator_happy_path(monkeypatch, corpus_path: Path):
     assert not outcome.error
     assert outcome.output_text.startswith("Invoices are due 14 days")
     assert outcome.latency_ms == 42
-    assert outcome.sub_metrics == {
-        "faithfulness": 0.8,
-        "context_precision": 0.6,
-        "answer_relevance": 1.0,
+    assert outcome.axis_breakdown == {
+        "quality": {
+            "faithfulness": 0.8,
+            "context_precision": 0.6,
+            "answer_relevance": 1.0,
+        }
     }
     assert outcome.score == pytest.approx((0.8 + 0.6 + 1.0) / 3)
     assert outcome.retrieved_contexts is not None

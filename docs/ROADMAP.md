@@ -7,7 +7,7 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：14 个 phase（8 已完成 / 6 待办 ≈ 6 人天）达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
+> **总体节奏**：14 个 phase（10 已完成 / 4 待办 ≈ 4 人天）达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
 
 ---
 
@@ -133,18 +133,19 @@
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_9_PLAN.md](./PHASE_9_PLAN.md)。
 
-## Phase 10 · Safety 轴落地（PII + jailbreak）   [TODO]
+## Phase 10 · Safety 轴落地（PII + jailbreak）   [DONE]
 
 - **目标**：让 multi_axis.py 的 `safety` 轴是真信号而不是 demo 字段。
-- **交付**：
-  - `SafetyDetector`：
-    - PII：用 `presidio-analyzer` 或自写 regex（email / phone / SSN）。
-    - Jailbreak：先一个简单 keyword + 短小 LLM-classifier。
-  - 接入 judge runner：每条 case 自动算 `safety_violation: bool`。
-  - 把 `safety` 拆成 `pii_violation_rate` + `jailbreak_violation_rate` 两个 sub-axis（report 同时显示总和与拆分）。
-  - 单测覆盖 PII detector 的精确率（手写 fixtures）。
-- **退出标准**：往 demo eval set 注入 5 条带 PII 的 input，gate 上能看到 safety 轴 fail。
-- **预估**：1 天。
+- **已交付**：
+  - `src/evalgate/safety/`：`PresidioPiiDetector`（绕过 AnalyzerEngine 直调 PatternRecognizer，CI 离线）+ `JailbreakDetector`（关键词 + 可选 LiteLLM JSON 分类器 + refusal-marker 启发式 fallback）+ `SafetyPipeline.augment` 把 4 项 sub-metric 写进 `axis_breakdown["safety"]` 并 OR `safety_violation`。
+  - 重构：`EvalRecord` / `EvalResultRow` / `EvaluationOutcome` 的 `sub_metrics` 全部改名为 `axis_breakdown: dict[str, dict[str, float]]`（外层键 = gate 主轴名）；migration 0010 在 PG / SQLite 双路 round-trip 旧 RAG 数据。
+  - `multi_axis._build_sub_metric_axes` 通用化：`quality` / `safety` 都自动派生 sub-axes，主轴 `passed = main_passed AND all(sub.passed)`，summary 同时点名 quality / safety 的 regressed sub-metric。
+  - `PromptSpec.safety` block（`enabled` / `pii.entities` / `pii.score_threshold` / `jailbreak.keywords` / `jailbreak.classifier_model`）。`safety.enabled=false` → pipeline 返回 `None`，runner 跳过。
+  - Safety demo：`examples/safety_demo/`（5 PII + 4 jailbreak + 3 clean case，baseline set = 仅 clean，candidate set = 全量）+ `scripts/phase10_safety_smoke.py`。
+  - 测试补齐：pii / jailbreak / pipeline / runner 集成 / gate sub-axes（quality + safety）/ migration round-trip + 全部 Phase 8/9 测试改为读 `axis_breakdown.quality`。
+- **退出标准达成**：`EVALGATE_MOCK_LLM=1 PYTHONPATH='src:.' python scripts/phase10_safety_smoke.py` 跑通：candidate set 注入 PII + jailbreak 后，gate report `axes[safety].passed=False`，`delta=+0.75`，三项 sub-axis（`pii_input_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）regress。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_10_PLAN.md](./PHASE_10_PLAN.md)。
 
 ## Phase 11 · Streamlit UI v1   [TODO]
 
