@@ -104,17 +104,23 @@ def build_axis_metrics(
 
         if spec.aggregator == "mean" and b_vals and c_vals:
             boot = bootstrap_diff_ci(b_vals, c_vals)
-            ci_low: float | None = boot.ci_low
-            ci_high: float | None = boot.ci_high
+            ci_low = boot.ci_low
+            ci_high = boot.ci_high
             significant = boot.significant
+            if spec.direction == "higher_is_better":
+                regressed = significant and delta < 0
+            else:
+                regressed = significant and delta > 0
+        elif spec.aggregator == "p95" and b_vals and c_vals:
+            # p95 bootstrap is a follow-up (different statistical story). Until
+            # then, any worsening tail delta fails the axis outright.
+            ci_low = ci_high = None
+            significant = False
+            regressed = delta < 0 if spec.direction == "higher_is_better" else delta > 0
         else:
             ci_low = ci_high = None
             significant = False
-
-        if spec.direction == "higher_is_better":
-            regressed = significant and delta < 0
-        else:
-            regressed = significant and delta > 0
+            regressed = False
 
         sub_metrics: dict[str, AxisMetric] | None = None
         sub_regressed = False

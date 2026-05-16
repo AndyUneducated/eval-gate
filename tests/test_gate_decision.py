@@ -80,3 +80,28 @@ def test_latency_p95_axis_has_no_ci() -> None:
     assert latency.ci_low is None
     assert latency.ci_high is None
     assert not latency.significant
+
+
+def test_latency_p95_regression_fails_when_tail_worsens() -> None:
+    base = _make_records(seed=0)
+    cand = _make_records(seed=0)
+    for r in cand:
+        r["latency_ms"] = 8000
+    report = build_gate_report(base, cand)
+    latency = next(a for a in report.axes if a.name == "latency_p95")
+    assert not latency.passed
+    assert latency.delta > 0
+
+
+def test_all_four_axes_can_fail_together() -> None:
+    base = _make_records(seed=0)
+    cand = _make_records(seed=0)
+    for r in cand:
+        r["score"] = 0.45
+        r["cost_usd"] = r["cost_usd"] * 4 + 0.05
+        r["latency_ms"] = 9000
+        r["safety_violation"] = True
+    report = build_gate_report(base, cand)
+    assert not report.passed
+    failed = {a.name for a in report.axes if not a.passed}
+    assert failed == {"quality", "cost", "latency_p95", "safety"}
