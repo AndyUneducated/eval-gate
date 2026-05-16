@@ -7,7 +7,8 @@ services:
       POSTGRES_PASSWORD: evalgate
       POSTGRES_DB: evalgate
     ports:
-      - "5432:5432"
+      # Host 5432 is often taken by a local Postgres; map to 5433 on the host.
+      - "5433:5432"
     volumes:
       - evalgate-pgdata:/var/lib/postgresql/data
     healthcheck:

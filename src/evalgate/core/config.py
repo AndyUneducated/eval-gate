@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     database_url: str = Field(
-        default="postgresql+asyncpg://evalgate:evalgate@localhost:5432/evalgate",
+        default="postgresql+asyncpg://evalgate:evalgate@localhost:5433/evalgate",
     )
 
     openai_api_key: str | None = None
