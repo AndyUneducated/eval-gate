@@ -8,6 +8,45 @@
 
 ---
 
+## 2026-05-16 · Phase 11.1 · UI Generate-Trace tab + `/v1/dev/seed-trace`
+
+给 Streamlit 加了第 4 个 tab “Generate Trace”，让 ops 在浏览器里 1 次按键就能造 demo trace，省掉跑 `python -m examples.demo_app.pipeline` 的步骤。关键设计是**没把 OTel SDK 塞进 UI 进程** —— 那条路要么把 `opentelemetry-sdk` / `-exporter-otlp-proto-http` 从 dev 提到主依赖（替一个演示按钮加 3 个非平凡包），要么让 streamlit 进程同时是 OTel producer + REST consumer，污染 UI 职责。改成纯后端方案：新建 `src/evalgate/dev/trace_seeder.py` 里 `TraceSpec` pydantic 模型 + 4 个 `TEMPLATES`（rag / agent / safety / plain）+ 纯函数 `build_otlp_envelope(spec) -> dict`；新建 `POST /v1/dev/seed-trace` 路由把 envelope 交给已有的 `parse_otlp_json` + `persist_spans`。结果是 **demo trace 走的是真实 OTLP-JSON ingest 链路**（OTLP/JSON 分支以前几乎只被单测覆盖，这次顺手把它推到 ops UI 这条用户路径上），UI 只多了一个 `seed_demo_trace(spec) -> list[str]` 的 thin client 方法，零新增主依赖。
+
+UI 表单做了模板 + 全字段可编辑：sidebar 选模板 + Apply 按钮，主区分 Connection / Root span / Retriever / Tool / LLM / Advanced 几块，每个输入都带 `help="required/optional · <用途>"` 的小字（含 `service.name` 必填、`evalgate.tag` 用于报告归因、`retriever.k` / `gen_ai.*` 落 attribute、`count` 1..20、Extra resource attributes 必须 JSON object）。session_state 存所有 widget 值，模板 Apply 是写回 session_state + `st.rerun()`。`count` 上限在 pydantic 模型层 `Field(le=MAX_COUNT)` 强约束，UI / server 两层都会拦下越界请求（FastAPI 自动 422）。
+
+刻意的边界：**服务端不真调 LLM**。`prompt` / `mock_response` 仅作为 span attribute 落到 `gen_ai.prompt` / `gen_ai.response.content`，这避免 server 端引入 LiteLLM 运行时副作用，也让 demo trace 完全离线、幂等、确定。`examples/demo_app/pipeline.py` 保留不动 —— 它仍是“真实 OTel SDK 用户”的最小复现，与 UI demo 是两套职责。
+
+测试两层：`test_trace_seeder.py`（12 个 unit，覆盖 4 模板的 span 结构 / parent 关系 / kind 透传 / `count>1` 产生独立 trace_id / `extra_resource_attributes` 合并 / `use_mock_response=False` 时不写 response.content / 上限拒绝），`test_dev_seed_trace.py`（6 个 ASGI integration，走完 pydantic → seeder → parser → persistence → `GET /v1/traces/{id}` 全链路）。260 → 278 passed，lint clean。
+
+抉择：(1) **OTLP-JSON 而不是 protobuf**：`opentelemetry-proto` 虽然已经是主依赖，但手写 protobuf 比手写 dict 复杂一个数量级，OTLP-JSON 经过的 `parse_otlp_json` 是同一份 ingest 代码的姊妹分支，覆盖率反而更值。(2) **`/v1/dev/*` 而不是 `/v1/traces:demo` 或挂在 traces 路由里**：dev-only 路由命名上一眼看清不是产品 API，未来若加 auth 也好整体 gate。(3) **UI 不 import `TraceSpec`**：page 直接拼 dict 后 POST，避免 pydantic 模型在 streamlit rerun 里被反复实例化；server 端 422 已经能给 UI 兜底错误。(4) **`Home.py` 加进 ruff N999 例外**：和 `pages/*.py` 同样，Streamlit 的入口文件名约定是 capitalized `Home.py`，是 nav tab 名的唯一表达，不挪走。
+
+## 2026-05-15 · Phase 11 · Streamlit Ops UI v1（HTTP-only，零 DB 直连）
+
+把 trace → promote → run → 看报告的全流程从 CLI 搬到浏览器，但严格守住一条边界：**UI 进程绝不直连数据库**。Streamlit 的执行模型对 asyncio 不友好（每次交互重跑整个 page 文件），如果让它持有 SQLAlchemy async session，会跟 FastAPI 的连接池抢资源；更糟的是“UI 直读 ORM” 这种捷径会让 schema 改动同时摧毁两个 surface。所以新增 `src/evalgate/ui/` 是一个独立的 HTTP 客户端，**只**调 `/v1/*`，跟 CLI / CI 共用同一份 REST。这一次也是第一次 EvalGate 有真正的“另一个服务”消费自己的 API，反过来逼着 API 暴露了缺失的最小读路径。
+
+那条最小读路径是 `/v1/runs*`。之前 `eval_runs` 只有写入侧（`evalgate run` → `judge.persistence.create_run / add_result / list_results`），没有 list / detail HTTP endpoint。UI Reports 页要做的事是“选两个 run → 把它们的 records 喂回现有 `POST /v1/evals/run`”，所以补了三个 endpoint：`GET /v1/runs?eval_set_id=&limit=`（latest first，可按 set 过滤）+ `GET /v1/runs/{id}`（meta）+ `GET /v1/runs/{id}/records`。第三个是关键——它把 `EvalResultRow` 直接 reshape 成 `EvalRecord`-shape JSON（`axis_breakdown` / `retrieved_contexts` 透传、`output_text` 从 `output["text"]` 抽出、`eval_run_id` / `eval_result_id` 走 `extra="allow"` 兜底），这样 UI 能不做任何二次转换把两组 records 直接 POST 回 `/v1/evals/run` 拿 GateReport。Server 端**没有规定**“谁是基线”，UI 自由组合两个 run，避免了一个隐含的方向性约定写死在后端。
+
+UI 包内部分四块：
+
+- **`api_client.EvalGateClient`**：同步 `httpx.Client` 包了 `list_traces` / `get_trace` / `list_eval_sets` / `get_eval_set` / `create_eval_set` / `add_case_from_trace` / `list_runs` / `get_run` / `get_run_records` / `run_gate` / `healthz` 这一组方法。所有非 2xx 响应抛 `EvalGateAPIError(status_code, detail)`，page 里 `st.error()` 拿到的就是 server 给的 `detail`，不会泄露 stacktrace 到浏览器。`base_url` 走 `EVALGATE_API_URL` env，默认 `http://127.0.0.1:8000`。同步而不是 async 是因为 streamlit 主线程是同步的，每个 page 文件每次 rerun 自己开 client / 自己 close，不维护跨 rerun 的连接池——简单胜过精巧。
+- **`format` 纯函数**：`humanize_latency_ms` / `humanize_cost_usd`（区分 sub-cent 4 位 vs 2 位）/ `humanize_score`（raw vs percent）/ `humanize_datetime`（UTC ISO → `YYYY-MM-DD HH:MM`）/ `axis_status_emoji`（其实是 ASCII，遵守"不用 emoji" 项目惯例）/ `sort_attribution`（`lower_is_worse` vs `higher_is_worse` 双向）/ `format_run_label`（picker 标签）。所有可能写错的格式逻辑都被关进这里单测，**page 文件不做任何条件分支以外的格式化**。
+- **三个 page**：`1_Traces.py`（侧栏 limit / service / since-hours，主区列表 + 选 trace 进 detail，右栏 span tree 用缩进 + JSON expander，底部 "Promote to eval set" 调 `add_case_from_trace`）；`2_Eval_Sets.py`（侧栏创建表单，主区列表 + 选 set 看 cases）；`3_Reports.py`（选 set → 列 runs → 双 selectbox 选 baseline / candidate → "Run gate" 按钮拉两组 records → POST gate → 4 列 metric 行 + 每个有 `sub_metrics` 的轴下挂展开表 + 按 worst delta 排序的 tag 归因表）。Reports 主区还在底部加了一个"sanity 行"——baseline / candidate 各自的 mean score / sum cost / avg latency，让 UI 自检 gate 报告跟原始 records 对得上。
+- **`Home.py` landing**：set page config、画 `/healthz` 状态徽章、列 page 用法。
+
+测试矩阵故意全 offline。`test_runs_endpoint` 用 conftest 的 in-memory aiosqlite 起一个 FastAPI app，测 list / set 过滤 / limit / 404 / detail 透传。`test_runs_records_endpoint` 测 `EvalResultRow → EvalRecord` 的字段映射 + `axis_breakdown` 透传 + 端到端把两组 records 喂回 `POST /v1/evals/run` 看 GateReport（`{quality, cost, latency_p95, safety}` 四轴齐全）。`test_ui_api_client` 用 `httpx.MockTransport` 拦截，验证 client 发的 URL / params（`None` 必须被剥掉，否则 `?service=None` 会污染 server 过滤）/ pydantic 解析 / 错误码 → `EvalGateAPIError` 的非 JSON 兜底。`test_ui_format` 是纯函数 unit。**没有**起 streamlit headless 跑 page——streamlit 的 page rerun + session_state 半持久化模型不适合断言，渲染断言性价比极低，用 page 模块 import 不带副作用 + 把所有有判断逻辑的代码下沉到 `format.py` 来代替。
+
+几个抉择记一笔：
+
+1. **`/v1/runs*` 拆到 `evals.py` router 而不是新建 `runs.py`**：`evals.py` 已经在管 “运行评估” 这个语义，list / detail / records 都是 “某个 run 的数据视图”，本就是一类东西。Mount 时给它两个 tag（`evals` + `runs`）让 OpenAPI 仍能按 namespace 分组。
+2. **`get_run_records` 直接 reshape 到 `EvalRecord` 而不是新发明 schema**：gate `build_gate_report` 已经吃 `EvalRecord`-shape dict 了，重新发明一个 `EvalResultOut` 等于让 UI 多走一层映射。`EvalRecord` 是 `extra="allow"`，所以可以塞 `eval_result_id` / `eval_run_id` / `output_text` / `retrieved_contexts` 这些 row-only 字段而不破契约——以后 Phase 12 的 attribution 想多看一些 trace 字段，加进 record 同时 list 端口免费跟上。
+3. **同步 client 而非 async**：streamlit 的 page 文件每次 rerun 都从顶到底重新执行，async client 要么 `asyncio.run` 浪费一次 event loop 启动，要么显式 `nest_asyncio`，两条路都加噪音。同步 + per-page client + `with` 上下文关闭是当下最朴素的选择。
+4. **不做"一键 evalgate run" 按钮**：放到 Phase 12+ 跟 CI gate 替换 fixtures 一起做，那时候才有 worker 异步执行 eval 的需求。Phase 11 守住"看而不动"的边界，UI 真正的副作用只有两个：创建 eval set + promote trace → case，全是已有 Phase 4/7 写过测试的端口。
+5. **`pyproject.toml` 把 `httpx` 从 dev 提到主依赖**：`api_client` 在生产代码里 import httpx，再放 dev group 就不一致了。`pytest` / `pytest-asyncio` / `aiosqlite` 这些只在测试用的还留在 dev。
+
+测试结果：242 passed, 13 warnings in 6.82s（warning 全是 LiteLLM 的 `coroutine 'Logging.async_success_handler' was never awaited`，上游 issue，无功能影响）。`make ui` + `evalgate-api` 双进程本机起来浏览器走通 trace → promote → run → reports 全流程，Reports 页在 demo seed 数据上能正确同时渲染 quality 的 ragas sub-axes 和 safety 的 4 个 sub-axes。
+
+---
+
 ## 2026-05-15 · Phase 10 · Safety 轴落地（PII + jailbreak）+ axis_breakdown 重构
 
 让 `multi_axis.safety` 从 demo 字段升级成真信号：每条 case 自动跑 PII（presidio）和 jailbreak（关键词 + 可选 LiteLLM 分类器）检测，把 4 项 sub-metric（`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）写进 `axis_breakdown["safety"]`，gate 在 safety 轴下挂同名 sub-axes 并按 lower-is-better 派发 bootstrap CI。

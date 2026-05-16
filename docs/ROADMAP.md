@@ -147,17 +147,18 @@
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_10_PLAN.md](./PHASE_10_PLAN.md)。
 
-## Phase 11 · Streamlit UI v1   [TODO]
+## Phase 11 · Streamlit Ops UI v1   [DONE]
 
-- **目标**：一个能"看 trace + 看 eval set + 看 gate 报告"的 ops UI。
-- **交付**：
-  - 三个 page：
-    1. **Traces**：分页列表 + 详情（span tree + raw attributes）。
-    2. **Eval Sets**：列表 + 详情 + "从 trace 加 case" 按钮（调 Phase 4/7 API）。
-    3. **Reports**：列出最近 N 次 `eval_run`，点开看 4 轴卡片 + tag 归因表。
-  - `streamlit` 单容器跑 + `make ui` 启动。
-- **退出标准**：在浏览器走完 trace → promote → run → 看报告 全流程。
-- **预估**：1 天。
+- **目标**：一个能"看 trace + 看 eval set + 看 gate 报告"的 ops UI，且不直连 DB。
+- **已交付**：
+  - 新 REST `/v1/runs?eval_set_id=&limit=` + `/v1/runs/{id}` + `/v1/runs/{id}/records`：repo helper `judge.persistence.list_runs`，router `evals.py` 把 `EvalResultRow` 回吐成 `EvalRecord`-shape 直接喂回 `POST /v1/evals/run`。
+  - `src/evalgate/ui/`：`api_client.EvalGateClient`（同步 `httpx.Client` + `EvalGateAPIError`，`EVALGATE_API_URL` 可覆盖 base URL）、`format` 纯函数、`Home.py` landing + 健康徽章、`pages/1_Traces.py` / `2_Eval_Sets.py` / `3_Reports.py`。
+  - 三个 page 全部只通过 client 调 `/v1/*`：Traces 分页 + span tree + promote-to-set 调 `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`；Eval Sets 列表 + 详情 + 创建表单；Reports 双 selectbox（baseline / candidate）→ 拉两组 records → POST `/v1/evals/run` → 4 轴 metric + sub-axes 表（quality / safety）+ 排序后的 tag 归因。
+  - `pyproject.toml` 主依赖加 `streamlit>=1.36` + `httpx>=0.27`（从 dev 提主），`Makefile` 加 `make ui`，README 加一节 “Ops UI”。
+  - 测试矩阵：`test_runs_endpoint`（list / filter / limit / 404）、`test_runs_records_endpoint`（row → EvalRecord 透传 `axis_breakdown`/`retrieved_contexts`，端到端喂回 gate）、`test_ui_api_client`（`httpx.MockTransport` 验证 URL / params / pydantic 解析 / 错误码）、`test_ui_format`（latency / cost / score / datetime / 排序 / run label）。
+- **退出标准达成**：`make db-up && uv run alembic upgrade head && uv run python scripts/seed_demo.py && uv run evalgate-api` + 另一 shell `make ui` → 浏览器走完 Traces → promote → Eval Sets 看 case → CLI 跑两次 `evalgate run` → Reports 选两 run 看 4 轴 + sub-axes 报告。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_11_PLAN.md](./PHASE_11_PLAN.md)。
 
 ## Phase 12 · 真实 CI Gate 端到端（替换 fixtures）   [TODO]
 

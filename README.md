@@ -77,6 +77,32 @@ baseline / candidate eval outputs to wire the gate against your own pipeline.
 | `make lint` | Ruff check + format check |
 | `make format` | Auto-fix lint + format |
 | `make db-up` / `make db-down` | Manage local Postgres |
+| `make ui` | Start the Streamlit ops UI on `http://127.0.0.1:8501` (talks to `evalgate-api` over HTTP) |
+
+## Ops UI (Phase 11)
+
+A read-only Streamlit UI lives at `src/evalgate/ui/`. It talks to the FastAPI
+backend over `/v1/*` only (never directly to the DB), so it stays a real
+consumer of the same REST surface as CLI / CI.
+
+```bash
+make db-up                      # start Postgres
+uv run alembic upgrade head     # apply migrations
+uv run python scripts/seed_demo.py
+uv run evalgate-api             # in one shell — port 8000
+make ui                         # in another — port 8501, opens in browser
+```
+
+Three pages:
+
+1. **Traces** — paginated list + span tree detail; "Promote to eval set" button
+   wraps `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`.
+2. **Eval Sets** — create new sets; pick one to inspect its cases.
+3. **Reports** — pick an eval set, two `eval_runs` (baseline / candidate),
+   render the four-axis gate verdict + sub-axes (RAG / safety) + tag
+   attribution.
+
+Configure the API base URL with `EVALGATE_API_URL` (default `http://127.0.0.1:8000`).
 
 ## License
 
