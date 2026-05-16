@@ -24,15 +24,15 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.13",
     "numpy>=2.1",
-    "opentelemetry-proto>=1.27",
+    "opentelemetry-proto>=1.30",
     "protobuf>=5",
-    "litellm>=1.50",
+    "litellm>=1.60",
     "pyyaml>=6",
-    "ragas>=0.1.21,<0.3",
+    "ragas>=0.2,<0.4",
     "datasets>=2.14",
-    "langchain-core>=0.2",
+    "langchain-core>=0.3",
     "presidio-analyzer>=2.2,<3",
-    "streamlit>=1.36",
+    "streamlit>=1.40",
     "httpx>=0.27",
 ]
 
@@ -44,12 +44,12 @@ evalgate-api = "evalgate.api.main:run"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "ruff>=0.7",
+    "ruff>=0.8",
     "pre-commit>=4.0",
     "aiosqlite>=0.20",
-    "opentelemetry-api>=1.27",
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-api>=1.30",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
 ]
 
 [build-system]
