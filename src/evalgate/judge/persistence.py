@@ -170,3 +170,23 @@ async def list_results(session: AsyncSession, run_id: str) -> list[EvalResultRow
         .order_by(EvalResultRow.created_at)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def list_runs(
+    session: AsyncSession,
+    *,
+    eval_set_id: str | None = None,
+    limit: int = 50,
+) -> list[EvalRunRow]:
+    """List recent eval_runs (latest first), optionally filtered by eval_set.
+
+    Phase 11: feeds the Streamlit Reports page's run pickers via
+    ``GET /v1/runs``. Order is ``created_at DESC`` so "latest baseline /
+    candidate" is the natural default; ties (same-second SQLite inserts) fall
+    back to ``id DESC`` for deterministic test output.
+    """
+    stmt = select(EvalRunRow).order_by(EvalRunRow.created_at.desc(), EvalRunRow.id.desc())
+    if eval_set_id is not None:
+        stmt = stmt.where(EvalRunRow.eval_set_id == eval_set_id)
+    stmt = stmt.limit(limit)
+    return list((await session.execute(stmt)).scalars().all())
