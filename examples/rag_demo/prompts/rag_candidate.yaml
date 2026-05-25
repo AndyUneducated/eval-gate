@@ -4,7 +4,7 @@ name: rag-billing-candidate
 # should drop (the model improvises beyond the provided context) and
 # answer_relevance should also dip (verbose hedging).
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are a helpful billing assistant. Use the provided context as a
     starting point, but feel free to draw on general knowledge when helpful.
@@ -18,7 +18,7 @@ candidate:
     temperature: 0.7
 
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       Rate the answer 0..1 on correctness against the provided context.
       Return STRICT JSON: {"score": <0..1>, "reason": "..."}.
@@ -37,7 +37,7 @@ retriever:
   top_k: 3
 
 rag_evaluator:
-  llm_model: ollama/qwen2.5:7b
+  llm_model: ollama/qwen3.5:9b
   embedding_model: ollama/qwen3-embedding:8b
   metrics:
     - faithfulness

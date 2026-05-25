@@ -158,7 +158,7 @@ async def test_llm_strategy_returns_flagged_only(db_session_factory):
 
     async with db_session_factory() as session:
         cases = await finder.find_llm(
-            session, run_id=run.id, limit=10, cheap_model="ollama/qwen2.5:7b", mock=True
+            session, run_id=run.id, limit=10, cheap_model="ollama/qwen3.5:9b", mock=True
         )
 
     # Mock classifier always returns subtle_bad=true -> both pass through.

@@ -25,11 +25,11 @@ os.environ.setdefault("EVALGATE_MOCK_LLM", "1")
 _PROMPT_YAML = """
 name: smoke
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate"
     params: {}
 judge_policy:

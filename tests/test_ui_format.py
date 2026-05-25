@@ -240,11 +240,11 @@ def test_format_run_label_renders_compact_summary() -> None:
         {
             "created_at": "2025-04-15T08:30:00Z",
             "prompt_path": "examples/safety_demo/prompts/safety_baseline.yaml",
-            "candidate_model": "ollama/qwen2.5:7b",
+            "candidate_model": "ollama/qwen3.5:9b",
             "mean_score": 0.812,
         }
     )
     assert "2025-04-15 08:30" in label
     assert "safety_baseline.yaml" in label
-    assert "ollama/qwen2.5:7b" in label
+    assert "ollama/qwen3.5:9b" in label
     assert "score=0.812" in label

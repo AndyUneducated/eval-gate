@@ -76,7 +76,7 @@ class Evaluator(Protocol):
 
     label: str
     """Stable string used for ``EvalRunRow.judge_model`` (e.g.
-    ``ollama/qwen2.5:7b+ollama/qwen2.5:7b`` for generic; ``ragas`` for RAG).
+    ``ollama/qwen3.5:9b+ollama/qwen3.5:9b`` for generic; ``ragas`` for RAG).
     Read-only after construction."""
 
     async def evaluate(

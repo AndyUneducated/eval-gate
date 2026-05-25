@@ -17,8 +17,8 @@ from evalgate.judge.prompt_spec import (
 def _spec(*, max_steps: int = 4, tool_names: list[str] | None = None) -> PromptSpec:
     return PromptSpec(
         name="agent-runtime-test",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b", user_template="{question}"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b", user_template="{question}"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         agent_runtime=AgentRuntimeSpec(
             max_steps=max_steps,

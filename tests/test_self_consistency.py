@@ -14,7 +14,7 @@ from evalgate.judge.pointwise import PointwiseJudge
 from evalgate.judge.prompt_spec import JudgeSpec
 from evalgate.judge.self_consistency import SelfConsistencyJudge
 
-_SPEC = JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")
+_SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")
 
 
 @pytest.mark.asyncio

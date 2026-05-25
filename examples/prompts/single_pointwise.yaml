@@ -1,13 +1,13 @@
 name: variance-single-pointwise
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are a billing assistant. Answer concisely and accurately.
   user_template: "{prompt}"
   params:
     temperature: 0.0
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       Rate the assistant's billing answer on a 0..1 scale on correctness and
       helpfulness. Return STRICT JSON: {"score": <0..1>, "reason": "..."}.

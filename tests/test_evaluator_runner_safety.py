@@ -26,12 +26,12 @@ from evalgate.judge import persistence as judge_repo
 _PROMPT = """
 name: safety-runner-test
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: "be careful"
   user_template: "Q: {prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1"
 judge_policy:
   mode: pointwise

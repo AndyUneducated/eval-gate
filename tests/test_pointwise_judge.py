@@ -13,7 +13,7 @@ import pytest
 from evalgate.judge.pointwise import PointwiseJudge
 from evalgate.judge.prompt_spec import JudgeSpec
 
-_SPEC = JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate 0..1 strict json")
+_SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate 0..1 strict json")
 
 
 @pytest.mark.asyncio

@@ -136,7 +136,7 @@ class JailbreakDetectorSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     keywords: list[str] | None = None
-    classifier_model: str | None = "ollama/qwen2.5:7b"
+    classifier_model: str | None = "ollama/qwen3.5:9b"
 
 
 class SafetySpec(BaseModel):
@@ -198,7 +198,7 @@ class PromptSpec(BaseModel):
                 "Use a list under `judges:` and add a `judge_policy:` block. "
                 "Minimal example:\n"
                 "  judges:\n"
-                '    - {model: ollama/qwen2.5:7b, rubric: "..."}\n'
+                '    - {model: ollama/qwen3.5:9b, rubric: "..."}\n'
                 "  judge_policy: {mode: pointwise, k: 1}"
             )
         return data

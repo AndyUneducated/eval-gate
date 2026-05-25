@@ -1,6 +1,6 @@
 name: agent-baseline
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are an agent planner. Decide tool calls step by step and then provide
     a final answer. Always return strict JSON actions.
@@ -11,7 +11,7 @@ candidate:
 
 # Generic evaluator fallback (unused for task_type=agent).
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       Rate the answer 0..1. Return STRICT JSON: {"score": <0..1>, "reason": "..."}.
     params:

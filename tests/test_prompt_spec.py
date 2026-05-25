@@ -22,12 +22,12 @@ from evalgate.judge.prompt_spec import (
 _YAML = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: "be helpful"
   user_template: "Q: {prompt}"
   params: {temperature: 0.0}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1 json"
     params: {}
 judge_policy:
@@ -47,7 +47,7 @@ def _write(tmp_path, body: str = _YAML):
 def test_load_prompt_spec_happy_path(tmp_path):
     spec = load_prompt_spec(_write(tmp_path))
     assert isinstance(spec, PromptSpec)
-    assert spec.candidate.model == "ollama/qwen2.5:7b"
+    assert spec.candidate.model == "ollama/qwen3.5:9b"
     assert len(spec.judges) == 1
     assert spec.judges[0].rubric.startswith("rate")
     assert spec.judge_policy.mode == "pointwise"
@@ -92,10 +92,10 @@ def test_legacy_singular_judge_rejected(tmp_path):
     legacy = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{prompt}"
 judge:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   rubric: "rate 0..1 json"
 judge_policy:
   mode: pointwise
@@ -110,7 +110,7 @@ def test_judges_must_be_nonempty(tmp_path):
     body = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{prompt}"
 judges: []
 judge_policy:
@@ -124,10 +124,10 @@ def test_judge_policy_mode_required(tmp_path):
     body = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{prompt}"
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate"
 judge_policy: {}
 """
@@ -169,7 +169,7 @@ def test_agent_runtime_accepts_planner_model_override(tmp_path):
         + """
 agent_runtime:
   max_steps: 4
-  planner_model: ollama/qwen2.5:7b
+  planner_model: ollama/qwen3.5:9b
   tool_names:
     - lookup_invoice
     - fetch_policy
@@ -177,5 +177,5 @@ agent_runtime:
     )
     spec = load_prompt_spec(_write(tmp_path, body))
     assert spec.agent_runtime is not None
-    assert spec.agent_runtime.planner_model == "ollama/qwen2.5:7b"
+    assert spec.agent_runtime.planner_model == "ollama/qwen3.5:9b"
     assert spec.agent_runtime.tool_names == ["lookup_invoice", "fetch_policy"]

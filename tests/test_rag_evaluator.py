@@ -50,10 +50,10 @@ def _spec(corpus_path: Path) -> PromptSpec:
     return PromptSpec(
         name="rag-test",
         candidate=CandidateSpec(
-            model="ollama/qwen2.5:7b",
+            model="ollama/qwen3.5:9b",
             user_template="Context:\n{contexts}\n\nQuestion: {question}",
         ),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         retriever=RetrieverSpec(
             kind="embedding",
@@ -62,7 +62,7 @@ def _spec(corpus_path: Path) -> PromptSpec:
             top_k=2,
         ),
         rag_evaluator=RagEvaluatorSpec(
-            llm_model="ollama/qwen2.5:7b",
+            llm_model="ollama/qwen3.5:9b",
             embedding_model="ollama/qwen3-embedding:8b",
         ),
     )
@@ -191,8 +191,8 @@ async def test_rag_evaluator_ragas_failure_yields_error_outcome(monkeypatch, cor
 async def test_rag_evaluator_requires_both_blocks():
     spec = PromptSpec(
         name="x",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="r")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="r")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
     )
     with pytest.raises(ValueError):

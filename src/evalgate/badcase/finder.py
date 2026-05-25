@@ -217,7 +217,7 @@ async def find_llm(
     *,
     run_id: str | None = None,
     limit: int = 20,
-    cheap_model: str = "ollama/qwen2.5:7b",
+    cheap_model: str = "ollama/qwen3.5:9b",
     mock: bool = False,
 ) -> list[BadCase]:
     # Two-pass funnel: get 2*limit uncertainty candidates, then ask the cheap
@@ -274,7 +274,7 @@ async def find(
     run_id: str | None = None,
     limit: int = 20,
     mock: bool = False,
-    cheap_model: str = "ollama/qwen2.5:7b",
+    cheap_model: str = "ollama/qwen3.5:9b",
 ) -> list[BadCase]:
     """Dispatch by strategy name. Raises ``ValueError`` on unknown strategy."""
     if strategy == "uncertainty":

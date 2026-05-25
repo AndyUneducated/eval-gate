@@ -19,14 +19,14 @@ from evalgate.judge import persistence as judge_repo
 _POINTWISE_YAML = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "Q: {prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate"
     params: {}
-  - model: ollama/qwen2.5:32b
+  - model: ollama/qwen3.6:27b
     rubric: "rate"
     params: {}
 judge_policy:
@@ -39,11 +39,11 @@ judge_policy:
 _PAIRWISE_YAML = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "Q: {prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "compare"
     params: {}
 judge_policy:
@@ -98,8 +98,8 @@ async def test_pointwise_two_judges_k2_writes_four_calls_per_case(db_session_fac
             # 2 judges x K=2 = 4 raw calls per result
             assert len(calls) == 4
             assert {c.judge_model for c in calls} == {
-                "ollama/qwen2.5:7b",
-                "ollama/qwen2.5:32b",
+                "ollama/qwen3.5:9b",
+                "ollama/qwen3.6:27b",
             }
 
 

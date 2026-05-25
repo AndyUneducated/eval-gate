@@ -15,7 +15,7 @@ from evalgate.judge.pairwise import PairwiseJudge
 from evalgate.judge.position_swap import PositionSwapJudge
 from evalgate.judge.prompt_spec import JudgeSpec
 
-_SPEC = JudgeSpec(model="ollama/qwen2.5:7b", rubric="x")
+_SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="x")
 
 
 def _swap() -> PositionSwapJudge:

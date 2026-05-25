@@ -19,8 +19,8 @@ async def _seed_run(session, *, eval_set_id: str, prompt_path: str = "p.yaml") -
         eval_set_id=eval_set_id,
         prompt_path=prompt_path,
         prompt_hash="deadbeef",
-        candidate_model="ollama/qwen2.5:7b",
-        judge_model="ollama/qwen2.5:7b",
+        candidate_model="ollama/qwen3.5:9b",
+        judge_model="ollama/qwen3.5:9b",
     )
     return run.id
 
@@ -74,5 +74,5 @@ async def test_get_run_returns_meta(client: AsyncClient, db_session_factory) -> 
     assert body["id"] == run_id
     assert body["eval_set_id"] == s.id
     assert body["prompt_path"] == "prompt.yaml"
-    assert body["candidate_model"] == "ollama/qwen2.5:7b"
+    assert body["candidate_model"] == "ollama/qwen3.5:9b"
     assert body["total_cases"] == 0

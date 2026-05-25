@@ -22,7 +22,6 @@ only entry point from :mod:`evaluator.rag.evaluator`.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from typing import Any
 
@@ -35,6 +34,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from evalgate.judge.prompt_spec import RagEvaluatorSpec
+from evalgate.judge.protocol import thinking_off_kwargs
 
 
 def _to_litellm_messages(messages: list[BaseMessage]) -> list[dict[str, str]]:
@@ -82,7 +82,30 @@ class LiteLLMChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return asyncio.run(self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+        # NB: do NOT bounce through ``asyncio.run(self._agenerate(...))``.
+        # ragas's Executor schedules each metric as a coroutine and from
+        # inside that coroutine calls langchain's sync interface, so any
+        # ``asyncio.run`` here re-enters the running loop and explodes
+        # with ``RuntimeError: asyncio.run() cannot be called from a
+        # running event loop``. LiteLLM ships a sync ``completion`` API —
+        # use it directly so the sync path stays sync.
+        if self.mock_text is not None:
+            return _wrap_text(self.mock_text)
+
+        call_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": _to_litellm_messages(messages),
+            **dict(self.params or {}),
+        }
+        for key, value in thinking_off_kwargs(self.model).items():
+            call_kwargs.setdefault(key, value)
+        if stop:
+            call_kwargs["stop"] = stop
+        try:
+            resp = litellm.completion(**call_kwargs)
+        except Exception as exc:  # surfaced as ragas-side metric failure
+            return _wrap_text(f'{{"error": "litellm-call-failed: {exc}"}}')
+        return _wrap_text(_extract_text(resp))
 
     async def _agenerate(
         self,
@@ -99,6 +122,8 @@ class LiteLLMChatModel(BaseChatModel):
             "messages": _to_litellm_messages(messages),
             **dict(self.params or {}),
         }
+        for key, value in thinking_off_kwargs(self.model).items():
+            call_kwargs.setdefault(key, value)
         if stop:
             call_kwargs["stop"] = stop
         try:
@@ -146,9 +171,14 @@ class LiteLLMEmbeddings(Embeddings):
         return out[0]
 
     def _embed_one(self, text: str) -> list[float]:
+        # Same reentry trap as ``LiteLLMChatModel._generate``: ragas
+        # invokes the sync ``embed_query`` from inside its async
+        # Executor, so ``asyncio.run`` here re-enters the running loop.
+        # Route the sync path through LiteLLM's sync ``embedding`` API.
         if self.mock_mode:
             return _hash_vector(text, self.dim)
-        return asyncio.run(self.aembed_query(text))
+        resp = litellm.embedding(model=self.model, input=[text])
+        return _extract_embedding(resp["data"][0])
 
 
 def _wrap_text(text: str) -> ChatResult:

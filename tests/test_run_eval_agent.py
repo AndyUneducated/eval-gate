@@ -12,11 +12,11 @@ from evalgate.judge import persistence as judge_repo
 _AGENT_PROMPT = """
 name: agent-run-test
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{question}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1 strict json"
     params: {}
 judge_policy:
@@ -35,11 +35,11 @@ agent_runtime:
 _GENERIC_PROMPT = """
 name: generic-run-test
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{question}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1 strict json"
     params: {}
 judge_policy:

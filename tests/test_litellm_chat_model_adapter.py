@@ -26,7 +26,7 @@ from evalgate.evaluator.rag.ragas_adapter import (
 
 @pytest.mark.asyncio
 async def test_chat_model_mock_text_short_circuits():
-    chat = LiteLLMChatModel(model="ollama/qwen2.5:7b", mock_text='{"score": 0.7}')
+    chat = LiteLLMChatModel(model="ollama/qwen3.5:9b", mock_text='{"score": 0.7}')
     result = await chat._agenerate([HumanMessage(content="hi")])
     assert len(result.generations) == 1
     assert result.generations[0].message.content == '{"score": 0.7}'
@@ -45,12 +45,12 @@ async def test_chat_model_real_call_passes_translated_messages(monkeypatch):
         AsyncMock(side_effect=fake_acompletion),
     )
 
-    chat = LiteLLMChatModel(model="ollama/qwen2.5:7b", params={"temperature": 0.0})
+    chat = LiteLLMChatModel(model="ollama/qwen3.5:9b", params={"temperature": 0.0})
     result = await chat._agenerate(
         [SystemMessage(content="be terse"), HumanMessage(content="ping")]
     )
 
-    assert captured["model"] == "ollama/qwen2.5:7b"
+    assert captured["model"] == "ollama/qwen3.5:9b"
     assert captured["temperature"] == 0.0
     assert captured["messages"] == [
         {"role": "system", "content": "be terse"},
@@ -68,7 +68,7 @@ async def test_chat_model_swallows_litellm_errors_into_payload(monkeypatch):
         "evalgate.evaluator.rag.ragas_adapter.litellm.acompletion",
         AsyncMock(side_effect=boom),
     )
-    chat = LiteLLMChatModel(model="ollama/qwen2.5:7b")
+    chat = LiteLLMChatModel(model="ollama/qwen3.5:9b")
     result = await chat._agenerate([HumanMessage(content="x")])
     assert "litellm-call-failed" in result.generations[0].message.content
 

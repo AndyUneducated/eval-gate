@@ -1,6 +1,6 @@
 name: rag-billing-baseline
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are a precise billing assistant for Acme. Answer the user's question
     using ONLY the provided context passages. If the context does not contain
@@ -17,7 +17,7 @@ candidate:
 # evaluator takes over) but required by the schema so generic cases in
 # the same eval set still have somewhere to land.
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       Rate the answer 0..1 on correctness against the provided context.
       Return STRICT JSON: {"score": <0..1>, "reason": "..."}.
@@ -36,7 +36,7 @@ retriever:
   top_k: 3
 
 rag_evaluator:
-  llm_model: ollama/qwen2.5:7b
+  llm_model: ollama/qwen3.5:9b
   embedding_model: ollama/qwen3-embedding:8b
   metrics:
     - faithfulness

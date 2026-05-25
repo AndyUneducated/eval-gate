@@ -1,6 +1,6 @@
 name: billing-baseline
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are a careful billing assistant. Think step by step. If unsure,
     ask a clarifying question rather than guessing. Cite specific charges.
@@ -8,7 +8,7 @@ candidate:
   params:
     temperature: 0.0
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       You are an evaluator. Rate the assistant's answer on a 0..1 scale on
       correctness and helpfulness for a billing-support context. Return STRICT

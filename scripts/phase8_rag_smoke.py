@@ -1,7 +1,7 @@
 """Phase 8 end-to-end smoke: seed RAG demo set → runner → gate.
 
 Designed to be runnable both fully mocked (CI / no Ollama) and against a
-real local Ollama (`ollama serve` with `qwen2.5:7b` + `qwen3-embedding:8b`).
+real local Ollama (`ollama serve` with `qwen3.5:9b` + `qwen3-embedding:8b`).
 
 Usage::
 

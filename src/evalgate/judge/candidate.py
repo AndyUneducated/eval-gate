@@ -19,6 +19,7 @@ from typing import Any
 import litellm
 
 from evalgate.judge.prompt_spec import CandidateSpec, PromptSpec
+from evalgate.judge.protocol import thinking_off_kwargs
 
 
 @dataclass
@@ -48,6 +49,8 @@ async def run_candidate(
         "messages": messages,
         **cand.params,
     }
+    for key, value in thinking_off_kwargs(cand.model).items():
+        kwargs.setdefault(key, value)
     if mock_response is not None:
         kwargs["mock_response"] = mock_response
 

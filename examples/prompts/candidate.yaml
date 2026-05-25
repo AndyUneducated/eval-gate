@@ -1,6 +1,6 @@
 name: billing-candidate
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   # Intentionally weakened system prompt: no chain-of-thought, no clarifying
   # questions, no citation requirement. Used to demo `evalgate gate` catching
   # a regression vs `baseline.yaml`.
@@ -9,7 +9,7 @@ candidate:
   params:
     temperature: 0.0
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       You are an evaluator. Rate the assistant's answer on a 0..1 scale on
       correctness and helpfulness for a billing-support context. Return STRICT

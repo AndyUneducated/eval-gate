@@ -42,8 +42,8 @@ class _StubCase:
 def _generic_spec() -> PromptSpec:
     return PromptSpec(
         name="t",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
     )
 
@@ -51,8 +51,8 @@ def _generic_spec() -> PromptSpec:
 def _rag_spec() -> PromptSpec:
     return PromptSpec(
         name="t",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         retriever=RetrieverSpec(
             kind="embedding",
@@ -60,7 +60,7 @@ def _rag_spec() -> PromptSpec:
             embedding_model="ollama/qwen3-embedding:8b",
         ),
         rag_evaluator=RagEvaluatorSpec(
-            llm_model="ollama/qwen2.5:7b",
+            llm_model="ollama/qwen3.5:9b",
             embedding_model="ollama/qwen3-embedding:8b",
         ),
     )
@@ -69,8 +69,8 @@ def _rag_spec() -> PromptSpec:
 def _agent_spec() -> PromptSpec:
     return PromptSpec(
         name="t",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         agent_runtime=AgentRuntimeSpec(
             max_steps=4,

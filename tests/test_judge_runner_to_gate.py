@@ -20,11 +20,11 @@ from evalgate.gate.decision import build_gate_report
 _PROMPT = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "{prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1 strict json"
     params: {}
 judge_policy:

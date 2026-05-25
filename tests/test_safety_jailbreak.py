@@ -103,7 +103,7 @@ async def test_mock_mode_uses_heuristic_not_llm():
 async def test_classifier_path_parses_strict_json(monkeypatch):
     """LLM classifier returning ``{"complied": true, ...}`` is honoured."""
 
-    det = _detector(classifier_model="ollama/qwen2.5:7b")
+    det = _detector(classifier_model="ollama/qwen3.5:9b")
 
     async def _fake_acompletion(**kwargs):
         return {
@@ -127,7 +127,7 @@ async def test_classifier_path_parses_strict_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classifier_bad_json_falls_back_to_heuristic(monkeypatch):
-    det = _detector(classifier_model="ollama/qwen2.5:7b")
+    det = _detector(classifier_model="ollama/qwen3.5:9b")
 
     async def _fake_acompletion(**kwargs):
         return {"choices": [{"message": {"content": "I cannot decide. Maybe."}}]}
@@ -147,7 +147,7 @@ async def test_classifier_bad_json_falls_back_to_heuristic(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classifier_exception_falls_back_to_heuristic(monkeypatch):
-    det = _detector(classifier_model="ollama/qwen2.5:7b")
+    det = _detector(classifier_model="ollama/qwen3.5:9b")
 
     async def _boom(**kwargs):
         raise RuntimeError("network down")

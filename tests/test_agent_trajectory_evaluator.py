@@ -19,8 +19,8 @@ from evalgate.judge.prompt_spec import (
 def _spec() -> PromptSpec:
     return PromptSpec(
         name="agent-evaluator-test",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b", user_template="{question}"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b", user_template="{question}"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         agent_runtime=AgentRuntimeSpec(
             max_steps=6, tool_names=["lookup_invoice", "fetch_policy", "get_payment_attempts"]

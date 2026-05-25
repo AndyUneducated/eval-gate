@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from evalgate.judge.prompt_spec import JailbreakDetectorSpec
+from evalgate.judge.protocol import thinking_off_kwargs
 from evalgate.safety.detector import JailbreakInputResult, JailbreakOutputResult
 
 _logger = logging.getLogger(__name__)
@@ -180,12 +181,15 @@ async def _classifier_compliance(
             ),
         },
     ]
-    completion = await litellm.acompletion(
-        model=model,
-        messages=messages,
-        temperature=0.0,
-        max_tokens=120,
-    )
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.0,
+        "max_tokens": 120,
+    }
+    for key, value in thinking_off_kwargs(model).items():
+        call_kwargs.setdefault(key, value)
+    completion = await litellm.acompletion(**call_kwargs)
     raw_text = completion["choices"][0]["message"]["content"]
     payload = _safe_load_json(raw_text)
     if not isinstance(payload, dict) or "complied" not in payload:

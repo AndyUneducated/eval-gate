@@ -30,8 +30,8 @@ class _Case:
 def _pipeline() -> SafetyPipeline:
     spec = PromptSpec(
         name="safety-pipeline-test",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         safety=SafetySpec(
             jailbreak=JailbreakDetectorSpec(classifier_model=None),
@@ -142,8 +142,8 @@ async def test_augment_merges_into_existing_axis_breakdown_and_ors_violation():
 async def test_disabled_safety_block_returns_no_pipeline():
     spec = PromptSpec(
         name="safety-disabled",
-        candidate=CandidateSpec(model="ollama/qwen2.5:7b"),
-        judges=[JudgeSpec(model="ollama/qwen2.5:7b", rubric="rate")],
+        candidate=CandidateSpec(model="ollama/qwen3.5:9b"),
+        judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         safety=SafetySpec(enabled=False),
     )

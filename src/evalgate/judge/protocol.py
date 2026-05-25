@@ -20,8 +20,54 @@ from typing import Any
 
 import litellm
 
+# `drop_params=True` lets LiteLLM silently strip provider-unsupported kwargs
+# (e.g. `think` reaching OpenAI). Without it, the thinking-off helper below
+# would have to maintain an exhaustive "what does provider X accept" table.
+# We pay nothing for it on the providers we *do* know — they accept the keys.
+litellm.drop_params = True
+
 # Capture both `score: 0.7`, `score = 0.7`, and `score is 0.7` styles.
 _SCORE_RE = re.compile(r'"?score"?\s*(?:[:=]|\bis\b)\s*([0-9]*\.?[0-9]+)', re.IGNORECASE)
+
+
+# Provider-specific kwargs that force thinking OFF. Applied via `setdefault`
+# at every LLM call site, so user-supplied `params: {think: true}` (Ollama)
+# or `params: {reasoning_effort: medium}` (Anthropic / OpenAI / Gemini) still
+# wins and opts the model back into thinking. Unknown providers get an empty
+# dict; `litellm.drop_params=True` above handles the case where a future
+# provider lands with a different knob name.
+#
+# Why default OFF: every judge / safety / badcase classifier in EvalGate
+# expects strict JSON in a small `num_predict` budget. Qwen3.x on Ollama
+# burns the entire budget on `<think>` content and returns empty `content`,
+# which our parsers tolerate as `score=0.0` — silently poisoning a run.
+# Tested 2026-05 against LiteLLM docs for each prefix below.
+_THINKING_OFF_BY_PREFIX: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("ollama/", {"think": False}),
+    ("anthropic/", {"reasoning_effort": "none"}),
+    ("claude-", {"reasoning_effort": "none"}),
+    # OpenAI reasoning models can't be hard-disabled; `minimal` is the
+    # cheapest still-thinking budget the API exposes.
+    ("openai/o", {"reasoning_effort": "minimal"}),
+    ("openai/gpt-5", {"reasoning_effort": "minimal"}),
+    ("gemini/gemini-2.5", {"reasoning_effort": "none"}),
+    ("gemini/gemini-3", {"reasoning_effort": "none"}),
+)
+
+
+def thinking_off_kwargs(model: str) -> dict[str, Any]:
+    """Return provider-specific kwargs that turn thinking OFF for ``model``.
+
+    Apply via ``kwargs.setdefault(...)`` so any value already supplied by
+    the user (typically through ``params:`` in prompt.yaml) wins. Returns
+    an empty dict for providers we don't model — combined with the global
+    ``litellm.drop_params=True`` that's a safe no-op.
+    """
+    m = model.lower()
+    for prefix, kwargs in _THINKING_OFF_BY_PREFIX:
+        if m.startswith(prefix):
+            return dict(kwargs)
+    return {}
 
 
 @dataclass
@@ -63,6 +109,8 @@ async def acompletion_json(
         **(params or {}),
     }
     kwargs.setdefault("response_format", {"type": "json_object"})
+    for key, value in thinking_off_kwargs(model).items():
+        kwargs.setdefault(key, value)
     if mock_response is not None:
         kwargs["mock_response"] = mock_response
     try:

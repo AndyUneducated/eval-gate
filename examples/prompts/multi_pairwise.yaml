@@ -1,21 +1,21 @@
 name: variance-multi-pairwise
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: |
     You are a billing assistant. Answer concisely and accurately.
   user_template: "{prompt}"
   params:
     temperature: 0.0
-# Two judges + size diversity (7B + 32B) to demonstrate cross-judge variance
+# Two judges + size diversity (9B + 27B) to demonstrate cross-judge variance
 # reduction. PairwiseJudge ignores rubric text but the schema still requires
 # it (uniform shape across modes); keep both copies identical.
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: |
       You compare two answers; return STRICT JSON {"winner": "A"|"B"|"tie", "reason": "..."}.
     params:
       temperature: 0.7
-  - model: ollama/qwen2.5:32b
+  - model: ollama/qwen3.6:27b
     rubric: |
       You compare two answers; return STRICT JSON {"winner": "A"|"B"|"tie", "reason": "..."}.
     params:

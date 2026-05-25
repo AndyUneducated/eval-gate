@@ -12,7 +12,7 @@ import pytest
 from evalgate.judge.pairwise import PairwiseJudge
 from evalgate.judge.prompt_spec import JudgeSpec
 
-_SPEC = JudgeSpec(model="ollama/qwen2.5:7b", rubric="(ignored in pairwise mode)")
+_SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="(ignored in pairwise mode)")
 
 
 @pytest.mark.asyncio

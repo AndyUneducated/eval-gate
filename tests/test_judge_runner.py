@@ -19,12 +19,12 @@ from evalgate.judge import persistence as judge_repo
 _PROMPT = """
 name: t
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   system: "be careful"
   user_template: "Q: {prompt}"
   params: {}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate 0..1 strict json"
     params: {}
 judge_policy:
@@ -87,7 +87,7 @@ async def test_run_eval_persists_records_and_finalises_run(db_session_factory, p
     assert run is not None
     assert run.total_cases == 3
     assert run.mean_score == pytest.approx(0.5)
-    assert run.candidate_model == "ollama/qwen2.5:7b"
+    assert run.candidate_model == "ollama/qwen3.5:9b"
 
 
 @pytest.mark.asyncio

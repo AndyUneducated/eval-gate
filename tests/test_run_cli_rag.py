@@ -41,11 +41,11 @@ def _yaml(tmp_path: Path, corpus_path: Path) -> Path:
         f"""\
 name: rag-cli-test
 candidate:
-  model: ollama/qwen2.5:7b
+  model: ollama/qwen3.5:9b
   user_template: "Context:\\n{{contexts}}\\n\\nQuestion: {{question}}"
   params: {{}}
 judges:
-  - model: ollama/qwen2.5:7b
+  - model: ollama/qwen3.5:9b
     rubric: "rate"
     params: {{}}
 judge_policy:
@@ -59,7 +59,7 @@ retriever:
   embedding_model: ollama/qwen3-embedding:8b
   top_k: 2
 rag_evaluator:
-  llm_model: ollama/qwen2.5:7b
+  llm_model: ollama/qwen3.5:9b
   embedding_model: ollama/qwen3-embedding:8b
   metrics:
     - faithfulness
