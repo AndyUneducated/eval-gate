@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-05-31 · 收尾 · 下线 `eval_results.safety_violation` 列（migration 0011）
+
+一次小而干净的 schema 收尾：把 `eval_results.safety_violation` 布尔列彻底删除（[migration 0011](src/evalgate/db/migrations/versions/0011_drop_safety_violation.py)，可逆 downgrade）。
+
+背景：Phase 10 把 safety 信号重构进了 `axis_breakdown["safety"]`（4 项速率子指标：`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`），但当时为稳妥保留了旧的 `safety_violation` 布尔列做过渡。保留它就是"两套真理"——gate 既能看 boolean 又能看速率，语义会漂。这次把过渡列删掉，**safety 状态只有一个来源：`axis_breakdown["safety"]` 下的速率子项**。
+
+落地影响：
+
+- `EvalRecord` / `EvalResultRow` / `EvaluationOutcome` 都不再带 `safety_violation` 字段。
+- gate 的 safety 轴判定**纯靠 4 个 sub-axis（lower-is-better）**：任一速率子项显著上升即 fail，不再依赖一个独立布尔。
+- `BadCase` 的 `outlier` 策略改读 `axis_breakdown["safety"]` 任一速率 > 0（见 [`finder.py`](src/evalgate/badcase/finder.py) `_safety_metric_flags`），`BadCase` dataclass 同步去掉 `safety_violation` 字段。
+
+**关键技术语言**：single-source-of-truth safety signal · alembic reversible column drop · gate safety axis driven purely by nested sub-metrics。
+
 ## 2026-05-16 · Phase 11.1 · UI Generate-Trace tab + `/v1/dev/seed-trace`
 
 给 Streamlit 加了第 4 个 tab “Generate Trace”，让 ops 在浏览器里 1 次按键就能造 demo trace，省掉跑 `python -m examples.demo_app.pipeline` 的步骤。关键设计是**没把 OTel SDK 塞进 UI 进程** —— 那条路要么把 `opentelemetry-sdk` / `-exporter-otlp-proto-http` 从 dev 提到主依赖（替一个演示按钮加 3 个非平凡包），要么让 streamlit 进程同时是 OTel producer + REST consumer，污染 UI 职责。改成纯后端方案：新建 `src/evalgate/dev/trace_seeder.py` 里 `TraceSpec` pydantic 模型 + 4 个 `TEMPLATES`（rag / agent / safety / plain）+ 纯函数 `build_otlp_envelope(spec) -> dict`；新建 `POST /v1/dev/seed-trace` 路由把 envelope 交给已有的 `parse_otlp_json` + `persist_spans`。结果是 **demo trace 走的是真实 OTLP-JSON ingest 链路**（OTLP/JSON 分支以前几乎只被单测覆盖，这次顺手把它推到 ops UI 这条用户路径上），UI 只多了一个 `seed_demo_trace(spec) -> list[str]` 的 thin client 方法，零新增主依赖。

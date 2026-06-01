@@ -120,7 +120,7 @@ records 元素严格遵守 `EvalRecord` 模型（见 §5）：
   "score": 0.87,
   "cost_usd": 0.0012,
   "latency_ms": 643,
-  "safety_violation": False,
+  "safety_violation": False,   # Phase 5 字段；Phase 10 起 safety 移入 axis_breakdown["safety"]，此布尔由 0011 删除
 }
 ```
 
@@ -131,7 +131,7 @@ records 元素严格遵守 `EvalRecord` 模型（见 §5）：
 [src/evalgate/db/models.py](../src/evalgate/db/models.py) 加两表：
 
 - `EvalRunRow`：`id` / `eval_set_id`(FK eval_sets, CASCADE, indexed) / `prompt_path` / `prompt_hash` / `candidate_model` / `judge_model` / `total_cases` / `mean_score` (nullable) / `created_at`
-- `EvalResultRow`：`id` / `eval_run_id`(FK eval_runs, CASCADE, indexed) / `eval_case_id`(soft ref / nullable) / `tags`(JsonType) / `output`(JsonType, `{"text": ...}`) / `score` / `reason` / `cost_usd` / `latency_ms` / `safety_violation` / `judge_confidence`(float, nullable，**预留给 Phase 17**) / `judge_raw`(JsonType nullable，**预留给 Phase 17 重算 calibration**) / `created_at`
+- `EvalResultRow`：`id` / `eval_run_id`(FK eval_runs, CASCADE, indexed) / `eval_case_id`(soft ref / nullable) / `tags`(JsonType) / `output`(JsonType, `{"text": ...}`) / `score` / `reason` / `cost_usd` / `latency_ms` / `safety_violation`（Phase 5 字段，已由 migration 0011 删除，safety 现走 `axis_breakdown["safety"]`）/ `judge_confidence`(float, nullable，**预留给 Phase 17**) / `judge_raw`(JsonType nullable，**预留给 Phase 17 重算 calibration**) / `created_at`
 
 新建 [src/evalgate/db/migrations/versions/0004_create_eval_runs.py](../src/evalgate/db/migrations/versions/0004_create_eval_runs.py)：PG 用 JSONB；索引 `ix_eval_results_eval_run_id`、`ix_eval_runs_eval_set_id`。
 

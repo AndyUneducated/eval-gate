@@ -4,6 +4,8 @@
 
 **状态**：DONE（新增 SafetyPipeline + presidio PII + jailbreak 检测；`axis_breakdown` 重构落地；phase10 smoke 跑通；211/211 测试 + lint/format 通过）
 
+> **后续更新（2026-05-31）**：本 phase 当时保留的过渡列 `eval_results.safety_violation` 已由 migration 0011 删除。safety 状态现在**唯一**来自 `axis_breakdown["safety"]` 的 4 个速率子项；gate 的 safety 轴纯靠 sub-axes 判定，不再有独立布尔。下文凡提到 `safety_violation` 布尔的地方均以此为准（见 [JOURNAL.md](../JOURNAL.md) 顶部条目）。
+
 ---
 
 ## 一句话
@@ -18,7 +20,7 @@ flowchart LR
   Eval --> Outcome["EvaluationOutcome"]
   Case --> SP["SafetyPipeline"]
   Outcome -->|output_text| SP
-  SP -->|"axis_breakdown.safety + safety_violation"| Persist["runner._persist_outcome"]
+  SP -->|"axis_breakdown.safety"| Persist["runner._persist_outcome"]
   Persist --> DB[("eval_results.axis_breakdown")]
   DB --> Gate["multi_axis.build_axis_metrics"]
   Gate --> Report["GateReport.axes safety + sub_metrics"]

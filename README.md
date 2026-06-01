@@ -45,18 +45,77 @@ EvalGate 把每个维度路由到合适的统计方法，并把结果汇总到�
 
 ## 它到底做什么
 
-EvalGate 摄取你的 LLM 应用发出的 OpenTelemetry trace，通过不确定性采样挖出 **BadCase**，
-在每个 PR 上跑一套 **任务感知 judge**（RAG / Agent / 通用），当四维卡口触发时直接 **block 合入**：
+EvalGate 摄取你的 LLM 应用发出的 OpenTelemetry（OTel）trace，通过不确定性采样（uncertainty sampling）挖出 **BadCase**，在每个 PR（Pull Request）上跑一套 **任务感知 judge（task-aware judge）**（RAG / Agent / 通用），当四维卡口触发时直接 **拦下合入（block merge）**。
 
-- **quality** —— pass rate，用 bootstrap-CI 显著性顶住随机 eval 噪声
-- **cost** —— token 消耗回归
-- **latency** —— p95 延迟回归
-- **safety** —— PII（Presidio）与 jailbreak（关键词 + LLM 分类器）违规率，拆成四个子维度（`pii_input_rate` / `pii_output_leak_rate` / `jailbreak_attempt_rate` / `jailbreak_compliance_rate`）
+整条流水线一图看懂：
 
-回归会按 `tag` / `intent` 做归因，因此报告写的是
+```mermaid
+flowchart LR
+    APP["LLM 应用<br/>(your app)"] -->|"OTel trace"| INGEST["Trace 摄取<br/>(FastAPI)"]
+    INGEST --> DB[("Postgres<br/>traces + spans")]
+    DB --> FINDER["BadCase Finder<br/>(主动学习 active learning)"]
+    FINDER -->|"一键 promote"| EVALSET["Eval Set<br/>(回归基线)"]
+    PR["开发者改了 prompt<br/>提交 PR"] -->|"GitHub CI 触发"| RUNNER
+    EVALSET --> RUNNER["任务分层 Judge Runner<br/>(RAG / Agent / Generic)"]
+    RUNNER --> GATE{"四维 Gate<br/>quality · cost<br/>latency · safety"}
+    GATE -->|"任一维度显著回归"| BLOCK["拦下 merge<br/>(block)"]
+    GATE -->|"全部通过"| PASS["放行 merge<br/>(pass)"]
+```
+
+四维卡口（gate）各自盯什么：
+
+| 维度（axis） | 盯什么 | 怎么判显著 |
+|---|---|---|
+| **quality** | pass rate（通过率） | bootstrap-CI 显著性，顶住随机 eval 噪声 |
+| **cost** | token 消耗回归 | bootstrap-CI |
+| **latency** | p95 延迟回归（不是均值） | 阈值（threshold） |
+| **safety** | PII（Presidio 检测）+ jailbreak（关键词 + LLM 分类器）违规率 | 拆成 4 个子维度，见下 |
+
+safety 轴的 4 个子维度（sub-metric）：`pii_input_rate`（输入含 PII）/ `pii_output_leak_rate`（输出泄漏 PII）/ `jailbreak_attempt_rate`（越狱尝试）/ `jailbreak_compliance_rate`（模型照办越狱）。
+
+回归会按 `tag` / `intent` 做归因（attribution），因此报告写的是
 *"billing intent 掉了 8 个点"*，而不是 *"pass rate 掉了 0.5%"*。
 
-> **状态**：多维度 CI 卡口 v1 已落地（基于 fixtures 驱动）。下一步是接真实 OTel ingest 与 judge runner。
+> **状态**：Phase 0–11 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通（CI 卡口当前仍由 fixtures 驱动）。
+> 下一步（Phase 12）把 CI 里的 fixtures 换成真实 judge 的输出，详见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
+
+## 架构总览
+
+各组件如何对应到源码模块（`src/evalgate/`）：
+
+```mermaid
+graph TB
+    subgraph app["应用侧 (application side)"]
+        OTEL["OTel SDK<br/>装一行，零迁移"]
+    end
+
+    subgraph platform["EvalGate 平台"]
+        INGEST["ingest/ + api/<br/>Trace 摄取 (FastAPI)"]
+        DB[("db/<br/>Postgres + JSONB")]
+        FINDER["badcase/<br/>BadCase Finder"]
+        EVALSET["eval_set/<br/>Eval Set Manager"]
+        EVALUATOR["evaluator/<br/>任务分层 Judge Runner"]
+        JUDGE["judge/<br/>LLM-as-Judge 原语"]
+        SAFETY["safety/<br/>PII + jailbreak 检测"]
+        REPORT["report/ + gate/<br/>四维报告 + 显著性 + 归因"]
+        UI["ui/<br/>Streamlit 运维 UI"]
+    end
+
+    subgraph ci["CI"]
+        GHA["GitHub Actions<br/>PR webhook"]
+    end
+
+    OTEL --> INGEST --> DB
+    DB --> FINDER --> EVALSET --> EVALUATOR
+    EVALUATOR --> JUDGE
+    EVALUATOR --> SAFETY
+    GHA -->|"trigger"| EVALUATOR
+    EVALUATOR --> REPORT
+    REPORT --> UI
+    REPORT -->|"gate decision"| GHA
+```
+
+完整的产品 + 技术 spec 见 [`docs/design.md`](docs/design.md)。
 
 ## 项目文档
 

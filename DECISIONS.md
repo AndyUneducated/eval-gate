@@ -9,6 +9,21 @@
 >
 > 编号单调递增。新决策追加在文末。
 
+## 决策索引（ADR index）
+
+| # | 决策 | 状态 | 一句话 |
+|---|---|---|---|
+| **ADR-001** | OTel 作为 trace 协议 | accepted | 用开放标准换"应用方零迁移 + 无 vendor lock-in" |
+| **ADR-002** | Postgres + JSONB | accepted | schema-less 字段用 JSONB，兼顾灵活与 SQL 能力 |
+| **ADR-003** | 砍掉 Prompt 管理 UI | accepted | prompt 当配置文件交给 git，聚焦"评测" |
+| **ADR-004** | 四轴 + 显著性 + 归因 gate | accepted（Phase 2） | 覆盖漏判 / 误 block / 不可解释三个坑 |
+| **ADR-005** | 任务分层 + 多 judge 去偏 | accepted（Phase 5/6/8/9） | 降方差 + 去 bias，覆盖 RAG / Agent / 通用 |
+| **ADR-006** | UI 用 Streamlit | accepted | 运维向 dashboard，省下时间投 backend |
+| **ADR-007** | 用 `uv` 管包 | accepted | 速度快、单二进制、PEP 621 兼容 |
+| **ADR-008** | LiteLLM 统一 LLM 调用 | accepted（Phase 5） | 一个接口调 100+ provider，支撑 cross-vote |
+
+> 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
+
 ---
 
 ## ADR-001 · 用 OpenTelemetry 作为 trace 协议，不做自家 SDK

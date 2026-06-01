@@ -9,11 +9,33 @@
 
 ## 一句话
 
-跑完 evalgate run 之后，从 `eval_results` 里**自动捞出最值得加进 eval_set 的 case**：判官最不确定的（uncertainty）、跑得最贵 / 最慢的（outlier）、便宜模型一眼能看出"微妙错误"的（llm）。捞出来一行 `evalgate badcase promote ...` 复制到目标 eval_set，丰富 regression 基线。
+跑完 evalgate run 之后，从 `eval_results` 里**自动捞出最值得加进 eval_set 的 case**：判官（judge）最不确定的（uncertainty）、跑得最贵 / 最慢的（outlier）、便宜模型一眼能看出"微妙错误"的（llm）。捞出来一行 `evalgate badcase promote ...` 挂到目标 eval_set，丰富回归（regression）基线。
+
+## 数据流
+
+```mermaid
+flowchart LR
+  Results[("eval_results<br/>(Phase 5/6 落库)")]
+  Finder["BadCaseFinder<br/>3 策略排序"]
+  U["uncertainty<br/>judge_confidence 最低"]
+  O["outlier<br/>score=0 / safety / p95 长尾"]
+  L["llm<br/>cheap model 二筛"]
+  Promote["promote_result_to_set<br/>(挂 membership)"]
+  Target["目标 eval_set<br/>(更强的回归基线)"]
+
+  Results --> Finder
+  Finder --> U
+  Finder --> O
+  Finder --> L
+  U --> Promote
+  O --> Promote
+  L --> Promote
+  Promote --> Target
+```
 
 ## 数据源决策（**需要用户拍板**）
 
-**A）只看 `eval_results`（推荐 MVP）**：所有策略都基于"已经被 judge 跑过的 case"，依赖 Phase 5/6 写好的 `judge_confidence` / `latency_ms` / `cost_usd` / `safety_violation` 列。优点：单一表、SQL 简单、跟 ROADMAP 里"必须先有 Phase 5/6 confidence 数据"一致；缺点：raw trace 里 latency/cost outlier 没被覆盖。
+**A）只看 `eval_results`（推荐 MVP）**：所有策略都基于"已经被 judge 跑过的 case"，依赖 Phase 5/6 写好的 `judge_confidence` / `latency_ms` / `cost_usd` 列 + `axis_breakdown["safety"]`（Phase 10 起）。优点：单一表、SQL 简单、跟 ROADMAP 里"必须先有 Phase 5/6 confidence 数据"一致；缺点：raw trace 里 latency/cost outlier 没被覆盖。
 
 **B）`eval_results` + 原始 `spans` 双源**：再加一种 `trace_outlier` 策略，扫 `spans.attributes` 找 latency/cost > p95 的未评测 trace，走 `case_extract.py` 提取 → 入候选池。优点：发现 production 里"完全没进 eval_set 的异常"；缺点：多一条路径、`uncertainty` 不适用（trace 还没跑 judge）、跟现有 `eval-set add --from-trace` 功能重叠。
 
@@ -21,7 +43,9 @@
 
 ## Schema（不加新表）
 
-Phase 5/6 的 `eval_results` 已经齐了 4 个信号列（score / judge_confidence / latency_ms / cost_usd / safety_violation），Phase 7 **不发 migration**，全部查询 on-the-fly。
+Phase 5/6 的 `eval_results` 已经齐了所需信号列（score / judge_confidence / latency_ms / cost_usd / `axis_breakdown`），Phase 7 **不发 migration**，全部查询 on-the-fly。
+
+> **注（schema 更新）**：早期 Phase 7 设计依赖一个独立的 `safety_violation` 布尔列。Phase 10 之后 safety 信号统一收进 `axis_breakdown["safety"]`（4 个速率子项），`safety_violation` 列已由 migration 0011 删除。下文 outlier 策略与 `BadCase` 字段以当前实现为准。
 
 LLM 策略每次重跑也行（cheap model，调一次 ~$0），如果以后嫌慢，Phase 17 calibration 顺手加 `bad_case_labels` 缓存表。**Phase 7 MVP 不引入缓存表**——决策清晰度优先。
 
@@ -39,11 +63,10 @@ class BadCase:
     judge_confidence: float | None
     latency_ms: int
     cost_usd: float
-    safety_violation: bool
     tags: list[str]
     strategy: str            # "uncertainty" | "outlier" | "llm"
     reason: str              # human-readable 一句话
-    llm_label: dict | None   # 仅 llm 策略填
+    llm_label: dict | None = None  # 仅 llm 策略填
 
 async def find_uncertainty(session, *, run_id: str | None, limit: int) -> list[BadCase]: ...
 async def find_outlier(    session, *, run_id: str | None, limit: int) -> list[BadCase]: ...
@@ -59,7 +82,7 @@ async def find(            session, *, strategy: str, ...) -> list[BadCase]:
 | Strategy | SQL / 逻辑 | 直觉 |
 |---|---|---|
 | `uncertainty` | `ORDER BY judge_confidence ASC NULLS LAST` | judge 越不确定越有研究价值 |
-| `outlier` | `score=0` OR `safety_violation=True` OR `latency_ms > p95` OR `cost_usd > p95` | 已知坏 + 长尾 |
+| `outlier` | `score=0` OR `axis_breakdown["safety"]` 任一速率 > 0 OR `latency_ms > p95` OR `cost_usd > p95` | 已知坏 + 长尾 |
 | `llm` | 先取 top-2*limit by uncertainty → 让 cheap model 给"subtle bad" 评 0/1 → 留 1 的取 limit | active learning |
 
 > **p95**：在 run 内算（query 带 `run_id`）或全局（不带 run_id）。用 `numpy.percentile`（已是 dep）。

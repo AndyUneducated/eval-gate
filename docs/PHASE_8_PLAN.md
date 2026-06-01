@@ -207,6 +207,6 @@ ragas 自动拉来 langchain / langchain-openai / langgraph 等一票（评测�
 | For Phase | 现在做的事 | 收益 |
 |-----------|-----------|------|
 | **9 Agent** | `EvaluatorRouter` 已支持注册 `TaskKind.agent`；`build_router` 加一行即可 | Phase 9 不用动 runner / persistence / records 流 |
-| **10 Safety** | `EvaluationOutcome.safety_violation` 字段已经在；evaluator 自行设 | Phase 10 检测器只挂 evaluator 链路上即可 |
+| **10 Safety** | `EvaluationOutcome` 统一承载逐 case 结果；safety 作为横切关注点 | Phase 10 实际把 `SafetyPipeline` 挂在 runner 层（每个 evaluator 返回后 augment），把 4 项速率写进 `axis_breakdown["safety"]`，三类 evaluator 都不感知 safety |
 | **11 Streamlit UI** | `EvalResultRow.sub_metrics` + `retrieved_contexts` 落库 | UI 直接读 DB 渲染 RAG 详情页（不重跑） |
 | **17 Calibration** | `EvalJudgeCallRow` 已存每 metric per-call score（`raw={"metric":..,"value":..}`）+ `judge_confidence` | Phase 17 直接对 ragas 三项分别拟合 calibration 不重跑 |

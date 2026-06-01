@@ -7,7 +7,51 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：14 个 phase（10 已完成 / 4 待办 ≈ 4 人天）达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
+> **总体节奏**：15 个核心 phase（Phase 0–14），其中 **12 个已完成（Phase 0–11）/ 3 个待办（Phase 12–14，≈ 3 人天）** 即达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
+
+---
+
+## 进度总览
+
+| 阶段 | 名称 | 状态 |
+|---|---|---|
+| Phase 0 | 仓库 bootstrap | `[DONE]` |
+| Phase 1 | Walking skeleton（FastAPI + DB + OTel mapper） | `[DONE]` |
+| Phase 2 | 多轴 CI Gate v1（fixtures 驱动） | `[DONE]` |
+| Phase 3 | OTel 端到端 + Trace 浏览 API | `[DONE]` |
+| Phase 4 | Eval Set Manager | `[DONE]` |
+| Phase 5 | Generic LLM-as-Judge Runner v1 | `[DONE]` |
+| Phase 6 | Judge Robustness（cross-vote + position-swap + self-consistency） | `[DONE]` |
+| Phase 7 | BadCase Finder（uncertainty + outlier） | `[DONE]` |
+| Phase 8 | RAG-aware Evaluator（RAGAS） | `[DONE]` |
+| Phase 9 | Agent Trajectory Evaluator | `[DONE]` |
+| Phase 10 | Safety 轴（PII + jailbreak） | `[DONE]` |
+| Phase 11 | Streamlit Ops UI v1 | `[DONE]` |
+| Phase 12 | 真实 CI Gate 端到端（替换 fixtures） | `[TODO]` ← 下一步 |
+| Phase 13 | Cloud 部署（AWS ECS + RDS） | `[TODO]` |
+| Phase 14 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]` |
+| Phase 15–18 | 亮点 phase（对抗出题 / 序贯 gate / 标定 / 影子模式） | `[TODO]`（可选） |
+
+核心 phase 是一条线性流水线，每个都建立在前一个之上：
+
+```mermaid
+flowchart LR
+    P0["P0–1<br/>骨架"] --> P2["P2<br/>Gate v1"]
+    P2 --> P3["P3<br/>OTel ingest"]
+    P3 --> P4["P4<br/>Eval Set"]
+    P4 --> P5["P5–6<br/>Judge Runner"]
+    P5 --> P7["P7<br/>BadCase Finder"]
+    P5 --> P8["P8–10<br/>RAG / Agent / Safety"]
+    P8 --> P11["P11<br/>Ops UI"]
+    P11 --> P12["P12<br/>真实 CI Gate"]
+    P12 --> P13["P13<br/>Cloud 部署"]
+    P13 --> P14["P14<br/>Demo 打磨"]
+
+    classDef done fill:#d4edda,stroke:#28a745,color:#155724;
+    classDef todo fill:#fff3cd,stroke:#ffc107,color:#856404;
+    class P0,P2,P3,P4,P5,P7,P8,P11 done;
+    class P12,P13,P14 todo;
+```
 
 ---
 
@@ -137,7 +181,7 @@
 
 - **目标**：让 multi_axis.py 的 `safety` 轴是真信号而不是 demo 字段。
 - **已交付**：
-  - `src/evalgate/safety/`：`PresidioPiiDetector`（绕过 AnalyzerEngine 直调 PatternRecognizer，CI 离线）+ `JailbreakDetector`（关键词 + 可选 LiteLLM JSON 分类器 + refusal-marker 启发式 fallback）+ `SafetyPipeline.augment` 把 4 项 sub-metric 写进 `axis_breakdown["safety"]` 并 OR `safety_violation`。
+  - `src/evalgate/safety/`：`PresidioPiiDetector`（绕过 AnalyzerEngine 直调 PatternRecognizer，CI 离线）+ `JailbreakDetector`（关键词 + 可选 LiteLLM JSON 分类器 + refusal-marker 启发式 fallback）+ `SafetyPipeline.augment` 把 4 项 sub-metric 写进 `axis_breakdown["safety"]`，gate 在 safety 轴下挂同名 sub-axes（lower-is-better）判显著。
   - 重构：`EvalRecord` / `EvalResultRow` / `EvaluationOutcome` 的 `sub_metrics` 全部改名为 `axis_breakdown: dict[str, dict[str, float]]`（外层键 = gate 主轴名）；migration 0010 在 PG / SQLite 双路 round-trip 旧 RAG 数据。
   - `multi_axis._build_sub_metric_axes` 通用化：`quality` / `safety` 都自动派生 sub-axes，主轴 `passed = main_passed AND all(sub.passed)`，summary 同时点名 quality / safety 的 regressed sub-metric。
   - `PromptSpec.safety` block（`enabled` / `pii.entities` / `pii.score_threshold` / `jailbreak.keywords` / `jailbreak.classifier_model`）。`safety.enabled=false` → pipeline 返回 `None`，runner 跳过。
@@ -200,6 +244,24 @@
 
 > 这四个 phase **不在 design.md 的最小完整形态里**，是给 EvalGate 加技术深度 / 简历亮点用的。
 > 每个 phase 都标了 **依赖**（必须先做完哪些 phase）；不强制按编号顺序。
+
+依赖关系一览（箭头 = "依赖于"）：
+
+```mermaid
+flowchart LR
+    P2["P2 Gate"] --> P16["P16 Sequential Gate"]
+    P6["P6 Multi-Judge"] --> P16
+    P7["P7 BadCase Finder"] --> P15["P15 Adversarial Synth"]
+    P10["P10 Safety"] --> P15
+    P6 --> P17["P17 Calibration"]
+    P14["P14 Demo（人工标注）"] --> P17
+    P5["P5 Runner"] --> P18["P18 Shadow Mode"]
+    P3["P3 OTel ingest"] --> P18
+    P13["P13 Cloud 部署"] --> P18
+
+    classDef hl fill:#e7d4f7,stroke:#8a2be2,color:#3a0a5d;
+    class P15,P16,P17,P18 hl;
+```
 
 ## Phase 15 · Adversarial Case Synth（红队自动出题）   [TODO]
 

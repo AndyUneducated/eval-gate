@@ -152,6 +152,21 @@ graph TB
 | **多 Judge 集成** | GPT-4 + Claude 跨家族 cross-vote（防 self-preference）|
 | **降方差** | 每条 case Judge 跑 3-5 次 + 多数投票 + 输出 confidence score |
 
+一条 case 的评测路径（先按任务分层，generic 路径再叠加去偏 / cross-vote / 降方差三层）：
+
+```mermaid
+flowchart LR
+    CASE["一条 case<br/>(input, output)"] --> R{"① 任务分层<br/>task routing"}
+    R -->|"rag"| RAGAS["RAGAS<br/>faithfulness / context-precision /<br/>answer-relevance"]
+    R -->|"agent"| TRAJ["Trajectory eval<br/>tool-call accuracy /<br/>step-wise success"]
+    R -->|"generic"| G["Rubric LLM-as-Judge<br/>+ ② 去偏 (position-swap)<br/>+ ③ cross-vote (GPT-4 + Claude)<br/>+ ④ self-consistency (K 次投票)"]
+    RAGAS --> OUT["score + confidence"]
+    TRAJ --> OUT
+    G --> OUT
+```
+
+> 实现层的精确嵌套拓扑（`MultiJudge → SelfConsistencyJudge → PositionSwapJudge → leaf`）见 [`PHASE_6_PLAN.md`](./PHASE_6_PLAN.md)。
+
 - **代价**：评测成本 ×6-10（vs 单次 LLM-as-Judge）
 - **收益**：
   - 单次方差 ±15% → **±3%**
@@ -179,6 +194,21 @@ graph TB
 | **多轴 Gate** | quality (pass rate) / cost (token 消耗) / p95 latency / safety (PII + jailbreak 违规) 四轴并联，任一跌穿即 fail |
 | **显著性判定** | diff 用 bootstrap CI（1000 次重采样取 95% 置信区间）或 paired t-test，CI 不跨 0 才算真 regression — 防 stochastic eval 误 block |
 | **按 tag 归因** | 每条 eval case 打 tag（intent / domain / 难度级），回归时按 tag 维度归因 → "billing intent 跌了 8 个点" 而不是 "整体 pass rate 跌了 0.5%" |
+
+gate 的判定流程（每个维度独立走一遍显著性判定，任一 fail 即拦截）：
+
+```mermaid
+flowchart TB
+    REC["baseline vs candidate<br/>每条 case 的 4 维 metric"] --> AGG["按维度聚合<br/>quality / cost / latency / safety"]
+    AGG --> SIG{"bootstrap CI<br/>是否跨 0?"}
+    SIG -->|"跨 0 = 抖动 noise"| OK["该维度通过"]
+    SIG -->|"不跨 0 = 真回归 regression"| FAIL["该维度 fail"]
+    FAIL --> ATTR["按 tag / intent 归因<br/>'billing 掉 8 个点'"]
+    OK --> GATE{"任一维度 fail?"}
+    ATTR --> GATE
+    GATE -->|"是"| BLOCK["拦下 merge (block)"]
+    GATE -->|"否"| PASS["放行 merge (pass)"]
+```
 
 - **代价**：tag 维护 + bootstrap 计算成本（可忽略，eval 本身耗时远大于显著性计算）
 - **收益**：覆盖真实生产 4 类坑（漏判 / 误 block / 不可解释 / 单点抖动）+ 让 CI gate 是"开发者愿意保留"而不是"绕过去"的形态
