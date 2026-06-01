@@ -75,9 +75,6 @@ class GenericEvaluator:
             )
 
         cand_mock = "mock-candidate-output" if mock else None
-        mock_scores_per_judge: list[list[float]] | None = None
-        if mock:
-            mock_scores_per_judge = [[0.5] * spec.judge_policy.k for _ in spec.judges]
 
         try:
             candidate = await run_candidate(case_input, spec, mock_response=cand_mock)
@@ -85,7 +82,7 @@ class GenericEvaluator:
                 case_input,
                 candidate.text,
                 reference,
-                mock_scores_per_judge=mock_scores_per_judge,
+                mock=mock,
             )
         except Exception as exc:
             return EvaluationOutcome(

@@ -1,8 +1,4 @@
-"""MultiJudge: aggregate N sub-judges into score/confidence/votes.
-
-Cross-judge variance also drives confidence down — even when each sub-judge
-is internally consistent, large disagreement *across* judges reduces trust.
-"""
+"""MultiJudge: aggregate N sub-judges into score/confidence/votes."""
 
 from __future__ import annotations
 
@@ -32,45 +28,60 @@ def _stack(judge_models: list[str], *, k: int = 1, concurrency: int = 2) -> Mult
     return MultiJudge(subs, policy)
 
 
+def _patch_pointwise_by_model(monkeypatch, model_scores: dict[str, list[float]]) -> None:
+    """Route acompletion_json by ``model`` kwarg to per-judge score sequences."""
+    queues: dict[str, list[str]] = {
+        model: [f'{{"score": {s}, "reason": ""}}' for s in scores]
+        for model, scores in model_scores.items()
+    }
+
+    async def fake(**kwargs):
+        model = kwargs["model"]
+        q = queues.get(model, [])
+        text = q.pop(0) if q else '{"score": 0.5, "reason": ""}'
+        return text, {}
+
+    monkeypatch.setattr("evalgate.judge.pointwise.acompletion_json", fake)
+
+
 @pytest.mark.asyncio
-async def test_two_agreeing_judges_high_confidence():
-    multi = _stack(["ollama/judge-a", "ollama/judge-b"], k=2)
-    agg = await multi.score(
-        "input",
-        "output",
-        mock_scores_per_judge=[[0.8, 0.8], [0.8, 0.8]],
+async def test_two_agreeing_judges_high_confidence(monkeypatch):
+    _patch_pointwise_by_model(
+        monkeypatch,
+        {
+            "ollama/judge-a": [0.8, 0.8],
+            "ollama/judge-b": [0.8, 0.8],
+        },
     )
+    multi = _stack(["ollama/judge-a", "ollama/judge-b"], k=2)
+    agg = await multi.score("input", "output", mock=False)
     assert agg.score == pytest.approx(0.8)
     assert agg.confidence == pytest.approx(1.0)
     assert set(agg.votes.keys()) == {"ollama/judge-a", "ollama/judge-b"}
     assert agg.votes["ollama/judge-a"] == pytest.approx(0.8)
-    # 2 judges x K=2 runs each = 4 raw calls
     assert len(agg.raw_calls) == 4
 
 
 @pytest.mark.asyncio
-async def test_disagreeing_judges_low_confidence():
-    # Each sub-judge is internally consistent (per-judge std = 0) but they
-    # disagree wildly across judges (one says 0.0, the other 1.0).
-    multi = _stack(["ollama/judge-a", "ollama/judge-b"], k=2)
-    agg = await multi.score(
-        "input",
-        "output",
-        mock_scores_per_judge=[[0.0, 0.0], [1.0, 1.0]],
+async def test_disagreeing_judges_low_confidence(monkeypatch):
+    _patch_pointwise_by_model(
+        monkeypatch,
+        {
+            "ollama/judge-a": [0.0, 0.0],
+            "ollama/judge-b": [1.0, 1.0],
+        },
     )
+    multi = _stack(["ollama/judge-a", "ollama/judge-b"], k=2)
+    agg = await multi.score("input", "output", mock=False)
     assert agg.score == pytest.approx(0.5)
-    # cross_std = 0.5 = max -> cross_term = 0 -> overall conf = 0
     assert agg.confidence == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
-async def test_single_judge_falls_back_to_self_consistency_only():
+async def test_single_judge_falls_back_to_self_consistency_only(monkeypatch):
+    _patch_pointwise_by_model(monkeypatch, {"ollama/only-judge": [0.7, 0.7, 0.7]})
     multi = _stack(["ollama/only-judge"], k=3)
-    agg = await multi.score(
-        "input",
-        "output",
-        mock_scores_per_judge=[[0.7, 0.7, 0.7]],
-    )
+    agg = await multi.score("input", "output", mock=False)
     assert agg.score == pytest.approx(0.7)
     assert agg.confidence == pytest.approx(1.0)
     assert list(agg.votes.keys()) == ["ollama/only-judge"]

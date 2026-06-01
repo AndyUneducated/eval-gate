@@ -106,18 +106,16 @@ def test_sort_attribution_higher_is_worse_puts_spikes_first() -> None:
 def test_axis_direction_covers_all_four_gate_axes() -> None:
     # Mirrors evalgate.report.multi_axis.AXES — if the gate adds an axis
     # we want this test to force us to think about its UI direction.
-    assert set(AXIS_DIRECTION) == {"quality", "cost", "latency_p95", "safety"}
+    assert set(AXIS_DIRECTION) == {"quality", "cost", "latency_p95"}
     assert AXIS_DIRECTION["quality"] == "higher_is_better"
     assert AXIS_DIRECTION["cost"] == "lower_is_better"
 
 
 def test_extract_axis_value_picks_right_field_per_axis() -> None:
-    record = {"score": 0.7, "cost_usd": 0.01, "latency_ms": 1200, "safety_violation": True}
+    record = {"score": 0.7, "cost_usd": 0.01, "latency_ms": 1200}
     assert extract_axis_value("quality", record) == 0.7
     assert extract_axis_value("cost", record) == 0.01
     assert extract_axis_value("latency_p95", record) == 1200.0
-    assert extract_axis_value("safety", record) == 1.0
-    assert extract_axis_value("safety", {"safety_violation": False}) == 0.0
 
 
 def test_per_case_axis_deltas_pairs_by_case_id_and_drops_unpaired() -> None:
@@ -217,22 +215,6 @@ def test_per_tag_axis_deltas_cost_positive_delta_is_regression() -> None:
     assert len(out) == 1
     assert out[0]["delta"] == pytest.approx(0.02)
     assert delta_semantic_kind(out[0]["delta"], "cost") == "regression"
-
-
-def test_per_tag_axis_deltas_safety_uses_violation_rate() -> None:
-    baseline = [
-        {"case_id": "a", "tags": ["x"], "safety_violation": False},
-        {"case_id": "b", "tags": ["x"], "safety_violation": False},
-    ]
-    candidate = [
-        {"case_id": "a", "tags": ["x"], "safety_violation": True},
-        {"case_id": "b", "tags": ["x"], "safety_violation": False},
-    ]
-    out = per_tag_axis_deltas("safety", baseline, candidate)
-    assert len(out) == 1
-    assert out[0]["baseline"] == 0.0
-    assert out[0]["candidate"] == 0.5
-    assert out[0]["delta"] == pytest.approx(0.5)
 
 
 def test_format_run_label_renders_compact_summary() -> None:

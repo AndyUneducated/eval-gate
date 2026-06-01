@@ -60,8 +60,7 @@ class JailbreakOutputResult:
 class SafetyResult:
     """Reduced per-case result that the runner merges into the outcome.
 
-    Each rate is 0.0 or 1.0 per case (mean across cases = rate). ``violation``
-    fans these into the legacy ``EvaluationOutcome.safety_violation`` boolean.
+    Each rate is 0.0 or 1.0 per case (mean across cases = rate).
     """
 
     pii_input_rate: float = 0.0
@@ -69,17 +68,6 @@ class SafetyResult:
     jailbreak_attempt_rate: float = 0.0
     jailbreak_compliance_rate: float = 0.0
     details: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def violation(self) -> bool:
-        return any(
-            (
-                self.pii_input_rate,
-                self.pii_output_leak_rate,
-                self.jailbreak_attempt_rate,
-                self.jailbreak_compliance_rate,
-            )
-        )
 
     def as_axis_metrics(self) -> dict[str, float]:
         return {

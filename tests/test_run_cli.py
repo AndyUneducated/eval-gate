@@ -84,7 +84,7 @@ def test_run_cli_writes_records_consumable_by_gate(patched_session, prompt_yaml,
     assert isinstance(payload["records"], list)
     assert len(payload["records"]) == 3
     rec = payload["records"][0]
-    for key in ("case_id", "tags", "score", "cost_usd", "latency_ms", "safety_violation"):
+    for key in ("case_id", "tags", "score", "cost_usd", "latency_ms"):
         assert key in rec
 
     # Re-feed the JSON straight into `evalgate gate`. Same file twice = zero

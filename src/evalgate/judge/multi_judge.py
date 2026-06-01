@@ -1,20 +1,4 @@
-"""MultiJudge: aggregate N sub-judges into a single score + confidence.
-
-This is the outermost layer of the Phase 6 stack. For each prompt we build
-one ``SelfConsistencyJudge`` per ``judges[]`` entry (each itself wrapping a
-``PointwiseJudge`` or ``PositionSwapJudge``), run them concurrently, and
-combine their per-sub-judge ``mean_score`` into a single final score.
-
-Aggregation:
-- final score = mean of per-judge mean_scores
-- final confidence = product(per_judge_confidence) * (1 - normalised cross-judge spread)
-  - product term: any single noisy judge drags confidence down
-  - spread term: even if every judge is internally consistent, large
-    disagreement *across* judges is a louder distrust signal
-- votes: { "<judge_model>": mean_score } for audit / Phase 7 BadCase
-
-Used by ``judge.runner.iter_eval``; not used directly by anything else.
-"""
+"""MultiJudge: aggregate N sub-judges into a single score + confidence."""
 
 from __future__ import annotations
 
@@ -26,11 +10,11 @@ from typing import Any
 from evalgate.judge.pairwise import PairwiseJudge
 from evalgate.judge.pointwise import PointwiseJudge
 from evalgate.judge.position_swap import PositionSwapJudge
-from evalgate.judge.prompt_spec import JudgePolicySpec, PromptSpec
-from evalgate.judge.protocol import JudgeCallRecord
+from evalgate.judge.prompt_spec import JudgePolicySpec, JudgeSpec, PromptSpec
+from evalgate.judge.protocol import MAX_STD_SCORE_SPREAD, JudgeCallRecord, LeafJudge
 from evalgate.judge.self_consistency import SelfConsistencyJudge
 
-_MAX_STD = 0.5
+_MIN_TEMP_FOR_VARIANCE = 0.7
 
 
 @dataclass
@@ -56,23 +40,18 @@ class MultiJudge:
         candidate_output: str,
         reference_output: str | None = None,
         *,
-        mock_scores_per_judge: list[list[float]] | None = None,
+        mock: bool = False,
     ) -> JudgeAggregate:
-        async def one(idx: int, sub: SelfConsistencyJudge):
+        async def one(sub: SelfConsistencyJudge):
             async with self.semaphore:
-                mock_scores = (
-                    mock_scores_per_judge[idx]
-                    if mock_scores_per_judge and idx < len(mock_scores_per_judge)
-                    else None
-                )
                 return await sub.score(
                     case_input,
                     candidate_output,
                     reference_output,
-                    mock_scores=mock_scores,
+                    mock=mock,
                 )
 
-        results = await asyncio.gather(*(one(i, sub) for i, sub in enumerate(self.sub_judges)))
+        results = await asyncio.gather(*(one(sub) for sub in self.sub_judges))
 
         votes: dict[str, float] = {}
         per_judge_conf: dict[str, float] = {}
@@ -80,7 +59,7 @@ class MultiJudge:
         per_judge_means: list[float] = []
 
         for sub, (verdict, calls) in zip(self.sub_judges, results, strict=True):
-            model = _judge_model_for(sub)
+            model = sub.leaf.model
             votes[model] = verdict.mean_score
             per_judge_conf[model] = verdict.confidence
             per_judge_means.append(verdict.mean_score)
@@ -88,7 +67,7 @@ class MultiJudge:
 
         score = sum(per_judge_means) / len(per_judge_means)
         cross_std = statistics.pstdev(per_judge_means) if len(per_judge_means) > 1 else 0.0
-        cross_term = max(0.0, 1.0 - (cross_std / _MAX_STD))
+        cross_term = max(0.0, 1.0 - (cross_std / MAX_STD_SCORE_SPREAD))
         prod_term = 1.0
         for c in per_judge_conf.values():
             prod_term *= c
@@ -103,30 +82,26 @@ class MultiJudge:
         )
 
 
-def _judge_model_for(sub: SelfConsistencyJudge) -> str:
-    leaf = sub.leaf
-    if isinstance(leaf, PositionSwapJudge):
-        return leaf.leaf.spec.model
-    if isinstance(leaf, PointwiseJudge):
-        return leaf.spec.model
-    return type(leaf).__name__
+def _ensure_variance_temperature(judge: JudgeSpec, k: int) -> JudgeSpec:
+    """When K>1, bump temperature so self-consistency samples can differ."""
+    if k <= 1:
+        return judge
+    params = dict(judge.params or {})
+    current = params.get("temperature")
+    if current is None or current < _MIN_TEMP_FOR_VARIANCE:
+        params["temperature"] = _MIN_TEMP_FOR_VARIANCE
+    return judge.model_copy(update={"params": params})
 
 
 def build_judge_stack(spec: PromptSpec) -> MultiJudge:
-    """Translate a `PromptSpec` into a fully-built MultiJudge.
-
-    Mode handling:
-    - ``pointwise``: each sub-judge = ``SelfConsistency(PointwiseJudge(...))``
-    - ``pairwise``:  each sub-judge = ``SelfConsistency(PositionSwap(PairwiseJudge(...)))``
-      Requires `case.expected` at runner level (enforced there, not here, so
-      this builder stays pure and side-effect-free).
-    """
+    """Translate a `PromptSpec` into a fully-built MultiJudge."""
     policy = spec.judge_policy
     sub_judges: list[SelfConsistencyJudge] = []
     for j in spec.judges:
+        j_spec = _ensure_variance_temperature(j, policy.k)
         if policy.mode == "pointwise":
-            leaf: Any = PointwiseJudge(j)
+            leaf: LeafJudge = PointwiseJudge(j_spec)
         else:
-            leaf = PositionSwapJudge(PairwiseJudge(j), enabled=policy.position_swap)
+            leaf = PositionSwapJudge(PairwiseJudge(j_spec), enabled=policy.position_swap)
         sub_judges.append(SelfConsistencyJudge(leaf, k=policy.k, concurrency=policy.concurrency))
     return MultiJudge(sub_judges, policy)

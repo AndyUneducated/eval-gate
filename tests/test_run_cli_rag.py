@@ -54,7 +54,6 @@ judge_policy:
   position_swap: false
   concurrency: 2
 retriever:
-  kind: embedding
   corpus_path: {corpus_path}
   embedding_model: ollama/qwen3-embedding:8b
   top_k: 2

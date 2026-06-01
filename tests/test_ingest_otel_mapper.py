@@ -27,16 +27,16 @@ def test_map_simple_snake_case_span() -> None:
 
 def test_map_otlp_attribute_list_and_nano_timestamps() -> None:
     raw = {
-        "spanId": "abc",
-        "traceId": "xyz",
+        "span_id": "abc",
+        "trace_id": "xyz",
         "name": "chat",
-        "startTimeUnixNano": "1747180800000000000",
-        "endTimeUnixNano": "1747180801000000000",
+        "start_time_unix_nano": "1747180800000000000",
+        "end_time_unix_nano": "1747180801000000000",
         "attributes": [
-            {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
-            {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "120"}},
-            {"key": "gen_ai.request.temperature", "value": {"doubleValue": 0.7}},
-            {"key": "evalgate.is_demo", "value": {"boolValue": True}},
+            {"key": "gen_ai.system", "value": {"string_value": "openai"}},
+            {"key": "gen_ai.usage.input_tokens", "value": {"int_value": "120"}},
+            {"key": "gen_ai.request.temperature", "value": {"double_value": 0.7}},
+            {"key": "evalgate.is_demo", "value": {"bool_value": True}},
         ],
     }
     span = map_otel_span(raw)

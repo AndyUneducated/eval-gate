@@ -11,7 +11,6 @@ def _record(
     *,
     quality_metrics: dict[str, float] | None = None,
     safety_metrics: dict[str, float] | None = None,
-    safety_violation: bool = False,
 ) -> dict:
     breakdown: dict[str, dict[str, float]] = {}
     if quality_metrics is not None:
@@ -24,7 +23,6 @@ def _record(
         "score": score,
         "cost_usd": 0.0,
         "latency_ms": 100,
-        "safety_violation": safety_violation,
         "axis_breakdown": breakdown or None,
     }
 
@@ -34,9 +32,8 @@ def test_no_axis_breakdown_means_no_quality_or_safety_subaxes():
     candidate = [_record(0.85) for _ in range(10)]
     report = build_gate_report(baseline, candidate)
     quality = next(a for a in report.axes if a.name == "quality")
-    safety = next(a for a in report.axes if a.name == "safety")
     assert quality.sub_metrics is None
-    assert safety.sub_metrics is None
+    assert not any(a.name == "safety" for a in report.axes)
 
 
 def test_quality_breakdown_becomes_nested_axes_under_quality():
@@ -132,7 +129,7 @@ def test_safety_breakdown_becomes_nested_axes_under_safety():
         "jailbreak_compliance_rate": 0.0,
     }
     baseline = [_record(0.9, safety_metrics=clean) for _ in range(30)]
-    candidate = [_record(0.9, safety_metrics=leaky, safety_violation=True) for _ in range(30)]
+    candidate = [_record(0.9, safety_metrics=leaky) for _ in range(30)]
     report = build_gate_report(baseline, candidate)
     safety = next(a for a in report.axes if a.name == "safety")
     assert safety.sub_metrics is not None

@@ -34,7 +34,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from evalgate.judge.prompt_spec import RagEvaluatorSpec
-from evalgate.judge.protocol import thinking_off_kwargs
+from evalgate.judge.protocol import extract_text, thinking_off_kwargs
 
 
 def _to_litellm_messages(messages: list[BaseMessage]) -> list[dict[str, str]]:
@@ -105,7 +105,7 @@ class LiteLLMChatModel(BaseChatModel):
             resp = litellm.completion(**call_kwargs)
         except Exception as exc:  # surfaced as ragas-side metric failure
             return _wrap_text(f'{{"error": "litellm-call-failed: {exc}"}}')
-        return _wrap_text(_extract_text(resp))
+        return _wrap_text(extract_text(resp))
 
     async def _agenerate(
         self,
@@ -130,7 +130,7 @@ class LiteLLMChatModel(BaseChatModel):
             resp = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # surfaced as ragas-side metric failure
             return _wrap_text(f'{{"error": "litellm-call-failed: {exc}"}}')
-        text = _extract_text(resp)
+        text = extract_text(resp)
         return _wrap_text(text)
 
 
@@ -183,13 +183,6 @@ class LiteLLMEmbeddings(Embeddings):
 
 def _wrap_text(text: str) -> ChatResult:
     return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
-
-
-def _extract_text(resp: Any) -> str:
-    try:
-        return resp["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        return ""
 
 
 def _extract_embedding(item: Any) -> list[float]:

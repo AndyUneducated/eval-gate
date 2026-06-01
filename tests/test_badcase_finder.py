@@ -45,6 +45,16 @@ async def _add_result(
     cost_usd: float,
     safety: bool = False,
 ) -> EvalResultRow:
+    axis_breakdown = None
+    if safety:
+        axis_breakdown = {
+            "safety": {
+                "pii_input_rate": 1.0,
+                "pii_output_leak_rate": 0.0,
+                "jailbreak_attempt_rate": 0.0,
+                "jailbreak_compliance_rate": 0.0,
+            }
+        }
     row = EvalResultRow(
         id=_new_id(),
         eval_run_id=run.id,
@@ -54,7 +64,7 @@ async def _add_result(
         score=score,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
-        safety_violation=safety,
+        axis_breakdown=axis_breakdown,
         judge_confidence=confidence,
     )
     session.add(row)
@@ -127,10 +137,9 @@ async def test_outlier_skips_p95_when_too_few_rows(db_session_factory):
         cases = await finder.find_outlier(session, run_id=run.id, limit=10)
 
     reasons = {c.reason for c in cases}
-    # Only the score=0 and the safety_violation rows should be flagged.
     assert len(cases) == 2
     assert any("score=0" in r for r in reasons)
-    assert any("safety_violation" in r for r in reasons)
+    assert any(r.startswith("safety:") for r in reasons)
 
 
 @pytest.mark.asyncio

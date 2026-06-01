@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -103,8 +102,3 @@ class EmbeddingRetriever:
         return [self._corpus[int(i)]["text"] for i in top_idx]
 
 
-def is_mock_env() -> bool:
-    """Single source of truth for ``EVALGATE_MOCK_LLM=1`` semantics, also
-    consulted by the RAG evaluator so all three (retriever, candidate,
-    ragas judge) flip together."""
-    return os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {"1", "true", "yes"}

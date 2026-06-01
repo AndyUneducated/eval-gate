@@ -19,7 +19,7 @@ from typing import Any
 import litellm
 
 from evalgate.judge.prompt_spec import CandidateSpec, PromptSpec
-from evalgate.judge.protocol import thinking_off_kwargs
+from evalgate.judge.protocol import extract_text, thinking_off_kwargs, to_dict
 
 
 @dataclass
@@ -58,17 +58,10 @@ async def run_candidate(
     resp = await litellm.acompletion(**kwargs)
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
-    text = _extract_text(resp)
+    text = extract_text(resp)
     cost_usd = _safe_cost(resp)
-    raw = _to_dict(resp)
+    raw = to_dict(resp)
     return CandidateOutput(text=text, latency_ms=latency_ms, cost_usd=cost_usd, raw=raw)
-
-
-def _extract_text(resp: Any) -> str:
-    try:
-        return resp["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        return ""
 
 
 def _safe_cost(resp: Any) -> float:
@@ -78,19 +71,3 @@ def _safe_cost(resp: Any) -> float:
         return float(litellm.completion_cost(completion_response=resp) or 0.0)
     except Exception:
         return 0.0
-
-
-def _to_dict(resp: Any) -> dict[str, Any]:
-    """LiteLLM responses are pydantic-like; coerce to a JSON-serialisable dict
-    so we can stash it in `eval_results.judge_raw` / candidate logs."""
-    if hasattr(resp, "model_dump"):
-        try:
-            return resp.model_dump()
-        except Exception:
-            pass
-    if isinstance(resp, dict):
-        return dict(resp)
-    try:
-        return dict(resp)
-    except Exception:
-        return {"repr": repr(resp)}

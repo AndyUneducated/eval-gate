@@ -32,7 +32,6 @@ AXIS_DIRECTION: dict[str, str] = {
     "quality": "higher_is_better",
     "cost": "lower_is_better",
     "latency_p95": "lower_is_better",
-    "safety": "lower_is_better",
 }
 
 
@@ -141,8 +140,6 @@ def extract_axis_value(axis_name: str, record: dict[str, Any]) -> float:
     pulls the raw ``latency_ms`` here — the p95 aggregation only matters at the
     axis level; for per-case ordering we want the raw values.
     """
-    if axis_name == "safety":
-        return 1.0 if record.get("safety_violation") else 0.0
     if axis_name == "latency_p95":
         return float(record.get("latency_ms", 0) or 0)
     if axis_name == "cost":

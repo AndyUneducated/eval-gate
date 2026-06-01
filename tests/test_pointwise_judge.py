@@ -1,10 +1,4 @@
-"""PointwiseJudge parsing layers — same contract as the deleted RubricJudge:
-
-- well-formed JSON -> exact score + reason
-- garbage text containing `score: 0.7` -> regex tolerance kicks in
-- nothing parseable -> score=0, reason=raw (we never raise)
-- numeric overflow -> clamped to [0, 1]
-"""
+"""PointwiseJudge parsing layers."""
 
 from __future__ import annotations
 
@@ -16,14 +10,20 @@ from evalgate.judge.prompt_spec import JudgeSpec
 _SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate 0..1 strict json")
 
 
+def _patch(monkeypatch, response: str) -> None:
+    async def fake(**kwargs):
+        return response, {}
+
+    monkeypatch.setattr("evalgate.judge.pointwise.acompletion_json", fake)
+
+
 @pytest.mark.asyncio
-async def test_parses_valid_json():
-    judge = PointwiseJudge(_SPEC)
-    verdict, call = await judge.score(
-        "input", "output", mock_response='{"score": 0.83, "reason": "ok"}'
-    )
-    assert verdict.score == pytest.approx(0.83)
-    assert verdict.reason == "ok"
+async def test_parses_valid_json(monkeypatch):
+    _patch(monkeypatch, '{"score": 0.83, "reason": "ok"}')
+    leaf = await PointwiseJudge(_SPEC).score("input", "output", mock=False)
+    assert leaf.score == pytest.approx(0.83)
+    call = leaf.calls[0]
+    assert call.reason == "ok"
     assert call.judge_model == _SPEC.model
     assert call.score == pytest.approx(0.83)
     assert call.position is None
@@ -31,22 +31,22 @@ async def test_parses_valid_json():
 
 
 @pytest.mark.asyncio
-async def test_regex_fallback_on_text():
-    judge = PointwiseJudge(_SPEC)
-    verdict, _ = await judge.score("input", "output", mock_response="The score is 0.7 overall")
-    assert verdict.score == pytest.approx(0.7)
+async def test_regex_fallback_on_text(monkeypatch):
+    _patch(monkeypatch, "The score is 0.7 overall")
+    leaf = await PointwiseJudge(_SPEC).score("input", "output", mock=False)
+    assert leaf.score == pytest.approx(0.7)
 
 
 @pytest.mark.asyncio
-async def test_clamps_above_one():
-    judge = PointwiseJudge(_SPEC)
-    verdict, _ = await judge.score("input", "output", mock_response='{"score": 1.5, "reason": "x"}')
-    assert verdict.score == 1.0
+async def test_clamps_above_one(monkeypatch):
+    _patch(monkeypatch, '{"score": 1.5, "reason": "x"}')
+    leaf = await PointwiseJudge(_SPEC).score("input", "output", mock=False)
+    assert leaf.score == 1.0
 
 
 @pytest.mark.asyncio
-async def test_unparseable_returns_zero_and_reason():
-    judge = PointwiseJudge(_SPEC)
-    verdict, _ = await judge.score("input", "output", mock_response="lol nothing useful here")
-    assert verdict.score == 0.0
-    assert "lol" in verdict.reason
+async def test_unparseable_returns_zero_and_reason(monkeypatch):
+    _patch(monkeypatch, "lol nothing useful here")
+    leaf = await PointwiseJudge(_SPEC).score("input", "output", mock=False)
+    assert leaf.score == 0.0
+    assert "lol" in leaf.calls[0].reason

@@ -1,10 +1,10 @@
-"""Map OTel/OTLP span payloads into the internal `Span` model.
+"""Map internal snake_case span dicts into the ``Span`` model.
 
-Accepts two shapes for now:
-  1. A simplified flat dict (snake_case) for tests + SDK ergonomics.
-  2. OTLP-JSON span body (camelCase + attribute key/value list).
+OTLP wire formats are normalized in :mod:`evalgate.ingest.otlp` before calling
+``map_otel_span``. This module accepts:
 
-Full OTLP `ResourceSpans` envelope parsing is a follow-up.
+  1. A simplified flat dict (snake_case) for tests.
+  2. OTLP attribute key/value lists (after protobuf unwrap).
 """
 
 from __future__ import annotations
@@ -14,21 +14,12 @@ from typing import Any
 
 from evalgate.core.schemas import Span, SpanKind
 
-_OTEL_KIND_INT_TO_HINT = {
-    0: SpanKind.other,
-    1: SpanKind.other,  # INTERNAL
-    2: SpanKind.other,  # SERVER
-    3: SpanKind.other,  # CLIENT
-    4: SpanKind.other,  # PRODUCER
-    5: SpanKind.other,  # CONSUMER
-}
-
 
 def _normalize_kind(raw: Any) -> SpanKind:
     if raw is None:
         return SpanKind.other
     if isinstance(raw, int):
-        return _OTEL_KIND_INT_TO_HINT.get(raw, SpanKind.other)
+        return SpanKind.other
     try:
         return SpanKind(str(raw).lower())
     except ValueError:
@@ -54,13 +45,9 @@ def _attrs_from_payload(value: Any) -> dict[str, Any]:
             continue
         # AnyValue union — pick whichever variant is present.
         for variant, caster in (
-            ("stringValue", str),
             ("string_value", str),
-            ("intValue", int),
             ("int_value", int),
-            ("doubleValue", float),
             ("double_value", float),
-            ("boolValue", bool),
             ("bool_value", bool),
         ):
             if variant in wrapped:
@@ -96,24 +83,20 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 def map_otel_span(raw: dict[str, Any]) -> Span:
     """Convert a single OTel/OTLP span dict into the internal `Span` model."""
-    span_id = raw.get("span_id") or raw.get("spanId")
-    trace_id = raw.get("trace_id") or raw.get("traceId")
+    span_id = raw.get("span_id")
+    trace_id = raw.get("trace_id")
     if not span_id or not trace_id:
         raise ValueError("span requires both 'span_id' and 'trace_id'")
 
-    parent = raw.get("parent_span_id") or raw.get("parentSpanId")
+    parent = raw.get("parent_span_id")
     name = raw.get("name") or "unnamed"
 
     attributes = _attrs_from_payload(raw.get("attributes"))
     kind_hint = raw.get("kind") or attributes.get("evalgate.kind")
     kind = _normalize_kind(kind_hint)
 
-    start_ts = _parse_timestamp(
-        raw.get("start_time") or raw.get("start_time_unix_nano") or raw.get("startTimeUnixNano")
-    )
-    end_ts = _parse_timestamp(
-        raw.get("end_time") or raw.get("end_time_unix_nano") or raw.get("endTimeUnixNano")
-    )
+    start_ts = _parse_timestamp(raw.get("start_time") or raw.get("start_time_unix_nano"))
+    end_ts = _parse_timestamp(raw.get("end_time") or raw.get("end_time_unix_nano"))
     if start_ts is None or end_ts is None:
         raise ValueError("span requires both start and end timestamps")
 

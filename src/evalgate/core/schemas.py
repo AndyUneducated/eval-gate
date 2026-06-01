@@ -127,7 +127,6 @@ class EvalRecord(BaseModel):
     score: float
     cost_usd: float = 0.0
     latency_ms: int = 0
-    safety_violation: bool = False
     # Phase 10 refactor (was Phase 8 ``sub_metrics``): per-axis, per-metric
     # breakdown. Outer key is the gate axis name (``quality`` / ``safety``);
     # inner dict is the per-metric value (RAG: faithfulness/...; safety:
@@ -196,7 +195,6 @@ class BadCaseOut(BaseModel):
     judge_confidence: float | None = None
     latency_ms: int
     cost_usd: float
-    safety_violation: bool
     tags: list[str] = Field(default_factory=list)
     strategy: str
     reason: str

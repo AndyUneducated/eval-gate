@@ -45,6 +45,8 @@ Pick the better answer. Return STRICT JSON of the form:
 {{"winner": "A" | "B" | "tie", "reason": "<one sentence>"}}
 """
 
+_MOCK_PAIRWISE = '{"winner": "tie", "reason": "mock"}'
+
 
 @dataclass
 class PairwiseVerdict:
@@ -57,6 +59,10 @@ class PairwiseJudge:
     def __init__(self, spec: JudgeSpec):
         self.spec = spec
 
+    @property
+    def model(self) -> str:
+        return self.spec.model
+
     async def compare(
         self,
         case_input: Any,
@@ -65,7 +71,7 @@ class PairwiseJudge:
         *,
         position: Position = "A_FIRST",
         sub_run_index: int = 0,
-        mock_response: str | None = None,
+        mock: bool = False,
     ) -> tuple[PairwiseVerdict, JudgeCallRecord]:
         if position == "A_FIRST":
             answer_a, answer_b = candidate_output, reference_output
@@ -82,7 +88,7 @@ class PairwiseJudge:
             model=self.spec.model,
             messages=[{"role": "user", "content": prompt}],
             params=self.spec.params,
-            mock_response=mock_response,
+            mock_response=_MOCK_PAIRWISE if mock else None,
         )
         winner, reason = parse_winner(text)
 
@@ -91,7 +97,7 @@ class PairwiseJudge:
             judge_model=self.spec.model,
             sub_run_index=sub_run_index,
             position=position,
-            score=None,  # leaf pairwise calls don't carry a 0..1 score
+            score=None,
             winner=winner,
             reason=reason,
             raw=raw,

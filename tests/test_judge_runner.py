@@ -76,7 +76,7 @@ async def test_run_eval_persists_records_and_finalises_run(db_session_factory, p
     # Records carry the contract fields gate needs.
     for rec in result.records:
         d = rec.model_dump()
-        for key in ("case_id", "tags", "score", "cost_usd", "latency_ms", "safety_violation"):
+        for key in ("case_id", "tags", "score", "cost_usd", "latency_ms"):
             assert key in d
 
     # Persistence side-effects: 3 result rows + finalised run row.

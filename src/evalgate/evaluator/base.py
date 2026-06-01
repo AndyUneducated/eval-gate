@@ -66,7 +66,6 @@ class EvaluationOutcome:
     raw_calls: list[JudgeCallRecord] = field(default_factory=list)
     judge_raw: dict[str, Any] | None = None
     reason: str | None = None
-    safety_violation: bool = False
     error: bool = False
     error_kind: str | None = None
 

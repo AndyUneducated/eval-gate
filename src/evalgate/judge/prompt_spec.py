@@ -60,17 +60,10 @@ RagMetricName = Literal["faithfulness", "context_precision", "answer_relevance"]
 
 
 class RetrieverSpec(BaseModel):
-    """Phase 8: how the candidate retrieves contexts at run time.
-
-    Currently we ship one ``kind`` (``embedding``) — a deterministic
-    embedding-then-cosine retriever over a JSON corpus file. The kind tag
-    is left here so future Phase iterations can plug in BM25 / a real
-    vector DB without touching call sites.
-    """
+    """Phase 8: embedding-then-cosine retriever over a JSON corpus file."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["embedding"] = "embedding"
     corpus_path: str
     embedding_model: str
     top_k: int = Field(default=4, ge=1, le=50)

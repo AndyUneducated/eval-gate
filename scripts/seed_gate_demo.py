@@ -74,7 +74,6 @@ def _baseline_record(case_id: str, i: int) -> dict[str, Any]:
         "score": 0.90,
         "cost_usd": 0.008,
         "latency_ms": 700 + (i % 5) * 20,
-        "safety_violation": False,
         "axis_breakdown": {
             "quality": dict(_QUALITY_GOOD),
             "safety": dict(_SAFETY_GOOD),
@@ -89,7 +88,6 @@ def _candidate_all_fail(case_id: str, i: int) -> dict[str, Any]:
         "score": 0.48,
         "cost_usd": 0.045,
         "latency_ms": 4500 + (i % 3) * 200,
-        "safety_violation": i % 5 < 2,  # 40% violation rate
         "axis_breakdown": {
             "quality": dict(_QUALITY_BAD),
             "safety": dict(_SAFETY_BAD),
@@ -106,7 +104,6 @@ def _candidate_quality_only(case_id: str, i: int) -> dict[str, Any]:
 
 def _candidate_safety_only(case_id: str, i: int) -> dict[str, Any]:
     base = _baseline_record(case_id, i)
-    base["safety_violation"] = i % 4 == 0
     base["axis_breakdown"] = {"quality": dict(_QUALITY_GOOD), "safety": dict(_SAFETY_BAD)}
     return base
 
@@ -151,7 +148,6 @@ async def _persist_run(
             reason="seed_gate_demo",
             cost_usd=float(rec["cost_usd"]),
             latency_ms=int(rec["latency_ms"]),
-            safety_violation=bool(rec["safety_violation"]),
             axis_breakdown=rec.get("axis_breakdown"),
         )
         scores.append(float(rec["score"]))

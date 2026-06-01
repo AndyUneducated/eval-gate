@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def is_mock_llm() -> bool:
+    """True when ``EVALGATE_MOCK_LLM`` is set (offline / CI mode)."""
+    return os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {"1", "true", "yes"}
 
 
 class Settings(BaseSettings):

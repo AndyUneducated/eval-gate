@@ -59,7 +59,6 @@ async def test_records_round_trip_with_axis_breakdown(
             reason=None,
             cost_usd=0.002,
             latency_ms=240,
-            safety_violation=False,
             axis_breakdown={
                 "quality": {"faithfulness": 0.8, "context_precision": 0.6},
                 "safety": {"pii_input_rate": 0.0},
@@ -77,7 +76,6 @@ async def test_records_round_trip_with_axis_breakdown(
     assert rec_a["score"] == 0.9
     assert rec_a["cost_usd"] == 0.001
     assert rec_a["latency_ms"] == 120
-    assert rec_a["safety_violation"] is False
     assert rec_a["axis_breakdown"] is None
     assert rec_a["output_text"] == "generic answer"
     assert rec_a["eval_run_id"] == run.id
@@ -160,7 +158,6 @@ async def test_records_can_feed_evals_run(client: AsyncClient, db_session_factor
         "quality",
         "cost",
         "latency_p95",
-        "safety",
     }
     quality = next(a for a in report["axes"] if a["name"] == "quality")
     assert quality["baseline"] > quality["candidate"]

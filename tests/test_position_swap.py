@@ -1,11 +1,4 @@
-"""PositionSwapJudge: removes position bias from pairwise judging.
-
-Verifies the four canonical outcomes:
-- both runs say candidate wins -> score=1.0, agreement=True
-- both runs say reference wins -> score=0.0, agreement=True
-- disagree -> score=0.5, agreement=False
-- either side ties -> score=0.5, agreement=False
-"""
+"""PositionSwapJudge: removes position bias from pairwise judging."""
 
 from __future__ import annotations
 
@@ -18,79 +11,70 @@ from evalgate.judge.prompt_spec import JudgeSpec
 _SPEC = JudgeSpec(model="ollama/qwen3.5:9b", rubric="x")
 
 
+def _patch_pairwise(monkeypatch, responses: list[str]) -> None:
+    queue = list(responses)
+
+    async def fake(**kwargs):
+        text = queue.pop(0) if queue else "{}"
+        return text, {}
+
+    monkeypatch.setattr("evalgate.judge.pairwise.acompletion_json", fake)
+
+
 def _swap() -> PositionSwapJudge:
     return PositionSwapJudge(PairwiseJudge(_SPEC), enabled=True)
 
 
 @pytest.mark.asyncio
-async def test_candidate_wins_both_orderings():
-    swap = _swap()
-    # In A_FIRST: candidate is "A"; in B_FIRST: candidate is "B".
-    verdict, calls = await swap.score(
-        "input",
-        "candidate",
-        "reference",
-        mock_response_a='{"winner": "A", "reason": ""}',
-        mock_response_b='{"winner": "B", "reason": ""}',
+async def test_candidate_wins_both_orderings(monkeypatch):
+    _patch_pairwise(
+        monkeypatch,
+        ['{"winner": "A", "reason": ""}', '{"winner": "B", "reason": ""}'],
     )
+    verdict = await _swap().score("input", "candidate", "reference", mock=False)
     assert verdict.score == 1.0
     assert verdict.agreement is True
-    assert len(calls) == 2
-    assert {c.position for c in calls} == {"A_FIRST", "B_FIRST"}
+    assert len(verdict.calls) == 2
+    assert {c.position for c in verdict.calls} == {"A_FIRST", "B_FIRST"}
 
 
 @pytest.mark.asyncio
-async def test_reference_wins_both_orderings():
-    swap = _swap()
-    verdict, _ = await swap.score(
-        "input",
-        "candidate",
-        "reference",
-        mock_response_a='{"winner": "B", "reason": ""}',
-        mock_response_b='{"winner": "A", "reason": ""}',
+async def test_reference_wins_both_orderings(monkeypatch):
+    _patch_pairwise(
+        monkeypatch,
+        ['{"winner": "B", "reason": ""}', '{"winner": "A", "reason": ""}'],
     )
+    verdict = await _swap().score("input", "candidate", "reference", mock=False)
     assert verdict.score == 0.0
     assert verdict.agreement is True
 
 
 @pytest.mark.asyncio
-async def test_disagreement_collapses_to_half():
-    swap = _swap()
-    # A_FIRST: candidate=A wins; B_FIRST: A wins again means *reference* wins
-    # the second pass. Two conflicting verdicts -> 0.5.
-    verdict, _ = await swap.score(
-        "input",
-        "candidate",
-        "reference",
-        mock_response_a='{"winner": "A", "reason": ""}',
-        mock_response_b='{"winner": "A", "reason": ""}',
+async def test_disagreement_collapses_to_half(monkeypatch):
+    _patch_pairwise(
+        monkeypatch,
+        ['{"winner": "A", "reason": ""}', '{"winner": "A", "reason": ""}'],
     )
+    verdict = await _swap().score("input", "candidate", "reference", mock=False)
     assert verdict.score == 0.5
     assert verdict.agreement is False
 
 
 @pytest.mark.asyncio
-async def test_tie_in_first_pass_collapses_to_half():
-    swap = _swap()
-    verdict, _ = await swap.score(
-        "input",
-        "candidate",
-        "reference",
-        mock_response_a='{"winner": "tie", "reason": ""}',
-        mock_response_b='{"winner": "B", "reason": ""}',
+async def test_tie_in_first_pass_collapses_to_half(monkeypatch):
+    _patch_pairwise(
+        monkeypatch,
+        ['{"winner": "tie", "reason": ""}', '{"winner": "B", "reason": ""}'],
     )
+    verdict = await _swap().score("input", "candidate", "reference", mock=False)
     assert verdict.score == 0.5
     assert verdict.agreement is False
 
 
 @pytest.mark.asyncio
-async def test_disabled_swap_only_calls_once():
+async def test_disabled_swap_only_calls_once(monkeypatch):
+    _patch_pairwise(monkeypatch, ['{"winner": "A", "reason": ""}'])
     swap = PositionSwapJudge(PairwiseJudge(_SPEC), enabled=False)
-    verdict, calls = await swap.score(
-        "input",
-        "candidate",
-        "reference",
-        mock_response_a='{"winner": "A", "reason": ""}',
-    )
-    assert len(calls) == 1
-    assert verdict.score == 1.0  # candidate is A in A_FIRST
+    verdict = await swap.score("input", "candidate", "reference", mock=False)
+    assert len(verdict.calls) == 1
+    assert verdict.score == 1.0

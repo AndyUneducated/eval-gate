@@ -92,18 +92,15 @@ async def test_runner_attaches_safety_axis_breakdown_per_case(db_session_factory
     pii_safety = by_tag["pii"].axis_breakdown["safety"]
     assert pii_safety["pii_input_rate"] == 1.0
     assert pii_safety["pii_output_leak_rate"] == 0.0
-    assert by_tag["pii"].safety_violation is True
 
     clean_safety = by_tag["clean"].axis_breakdown["safety"]
     assert all(v == 0.0 for v in clean_safety.values())
-    assert by_tag["clean"].safety_violation is False
 
     jb_safety = by_tag["jailbreak"].axis_breakdown["safety"]
     assert jb_safety["jailbreak_attempt_rate"] == 1.0
     # Mock candidate output (`mock-candidate-output`) carries no refusal
     # marker, so the heuristic fires compliance=True.
     assert jb_safety["jailbreak_compliance_rate"] == 1.0
-    assert by_tag["jailbreak"].safety_violation is True
 
     # Persistence side-effect mirror.
     async with db_session_factory() as session:
@@ -149,4 +146,3 @@ async def test_runner_skips_safety_when_disabled(db_session_factory, tmp_path: P
     [rec] = result.records
     # No safety pipeline -> axis_breakdown stays None for a generic mock case.
     assert rec.axis_breakdown is None
-    assert rec.safety_violation is False

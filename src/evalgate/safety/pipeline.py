@@ -4,9 +4,6 @@ The runner builds one :class:`SafetyPipeline` per run via
 :func:`build_safety_pipeline` and calls ``await pipeline.augment(case, outcome)``
 right after the per-task evaluator returns. Augmenting is non-destructive:
 - merges ``axis_breakdown["safety"]`` into the existing breakdown;
-- ORs the derived violation flag into ``outcome.safety_violation`` so legacy
-  consumers (badcase finder, the gate's main safety axis) keep working.
-
 The pipeline never raises — any exception inside a detector is caught and
 reduced to a zero rate for that detector. We'd rather under-report than break
 a run.
@@ -118,7 +115,7 @@ class SafetyPipeline:
         mock: bool,
     ) -> EvaluationOutcome:
         """Compute safety sub-metrics for ``(case, outcome)`` and return a
-        new outcome with the breakdown merged + ``safety_violation`` ORed."""
+        new outcome with ``axis_breakdown["safety"]`` merged."""
         input_text = _input_text_for(case)
         output_text = outcome.output_text or ""
         result = await self.evaluate(
@@ -140,7 +137,6 @@ class SafetyPipeline:
         return replace(
             outcome,
             axis_breakdown=breakdown,
-            safety_violation=outcome.safety_violation or result.violation,
             judge_raw=merged_judge_raw,
         )
 

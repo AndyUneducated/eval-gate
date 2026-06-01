@@ -7,7 +7,7 @@ Three strategies, all on existing columns of `eval_results` (no new table):
    here, so human attention pays off the most.
 
 2. ``outlier`` — keep rows that are *categorically* interesting:
-       score == 0  OR  safety_violation  OR  latency > p95  OR  cost > p95
+       score == 0  OR  any safety axis_breakdown rate > 0  OR  latency > p95  OR  cost > p95
    p95 is taken within the same ``run_id`` if provided, else globally. Below
    ``MIN_FOR_PERCENTILE`` rows we skip the percentile guard (no statistical
    meaning) and fall back to ``score == 0 / safety`` only.
@@ -46,7 +46,6 @@ class BadCase:
     judge_confidence: float | None
     latency_ms: int
     cost_usd: float
-    safety_violation: bool
     tags: list[str]
     strategy: str
     reason: str
@@ -80,6 +79,24 @@ def _output_text(row: EvalResultRow) -> str:
     return ""
 
 
+def _safety_metric_flags(row: EvalResultRow) -> list[str]:
+    """Non-zero rates under ``axis_breakdown["safety"]``."""
+    breakdown = row.axis_breakdown or {}
+    if not isinstance(breakdown, dict):
+        return []
+    safety = breakdown.get("safety")
+    if not isinstance(safety, dict):
+        return []
+    flags: list[str] = []
+    for key, val in safety.items():
+        try:
+            if float(val) > 0:
+                flags.append(str(key))
+        except (TypeError, ValueError):
+            continue
+    return flags
+
+
 def _percentile_or_none(values: list[float], *, q: float) -> float | None:
     if len(values) < MIN_FOR_PERCENTILE:
         return None
@@ -97,7 +114,6 @@ def _to_badcase(
         judge_confidence=row.judge_confidence,
         latency_ms=int(row.latency_ms),
         cost_usd=float(row.cost_usd),
-        safety_violation=bool(row.safety_violation),
         tags=list(row.tags or []),
         strategy=strategy,
         reason=reason,
@@ -140,8 +156,9 @@ async def find_outlier(
         reasons: list[str] = []
         if float(r.score) == 0.0:
             reasons.append("score=0")
-        if r.safety_violation:
-            reasons.append("safety_violation")
+        safety_flags = _safety_metric_flags(r)
+        if safety_flags:
+            reasons.append(f"safety:{','.join(safety_flags)}")
         if lat_p95 is not None and r.latency_ms > lat_p95:
             reasons.append(f"latency_ms={r.latency_ms} > p95={lat_p95:.0f}")
         if cost_p95 is not None and r.cost_usd > cost_p95:

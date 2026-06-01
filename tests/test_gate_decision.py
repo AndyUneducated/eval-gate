@@ -16,7 +16,6 @@ def _make_records(seed: int, n: int = 60) -> list[dict[str, Any]]:
             "score": round(rng.uniform(0.78, 0.95), 3),
             "cost_usd": round(rng.uniform(0.005, 0.02), 4),
             "latency_ms": rng.randint(800, 1500),
-            "safety_violation": rng.random() < 0.02,
         }
         for i in range(n)
     ]
@@ -28,7 +27,7 @@ def test_identical_runs_pass_gate() -> None:
     report = build_gate_report(base, cand)
     assert report.passed
     assert all(axis.passed for axis in report.axes)
-    assert {a.name for a in report.axes} == {"quality", "cost", "latency_p95", "safety"}
+    assert {a.name for a in report.axes} == {"quality", "cost", "latency_p95"}
 
 
 def test_quality_regression_fails_gate() -> None:
@@ -96,11 +95,25 @@ def test_latency_p95_regression_fails_when_tail_worsens() -> None:
 def test_all_four_axes_can_fail_together() -> None:
     base = _make_records(seed=0)
     cand = _make_records(seed=0)
+    clean_safety = {
+        "pii_input_rate": 0.0,
+        "pii_output_leak_rate": 0.0,
+        "jailbreak_attempt_rate": 0.0,
+        "jailbreak_compliance_rate": 0.0,
+    }
+    leaky_safety = {
+        "pii_input_rate": 1.0,
+        "pii_output_leak_rate": 1.0,
+        "jailbreak_attempt_rate": 1.0,
+        "jailbreak_compliance_rate": 1.0,
+    }
+    for r in base:
+        r["axis_breakdown"] = {"safety": clean_safety}
     for r in cand:
         r["score"] = 0.45
         r["cost_usd"] = r["cost_usd"] * 4 + 0.05
         r["latency_ms"] = 9000
-        r["safety_violation"] = True
+        r["axis_breakdown"] = {"safety": leaky_safety}
     report = build_gate_report(base, cand)
     assert not report.passed
     failed = {a.name for a in report.axes if not a.passed}

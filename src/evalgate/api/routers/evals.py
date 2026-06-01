@@ -109,7 +109,6 @@ def _result_to_record(row: EvalResultRow) -> EvalRecord:
         score=float(row.score),
         cost_usd=float(row.cost_usd),
         latency_ms=int(row.latency_ms),
-        safety_violation=bool(row.safety_violation),
         axis_breakdown=row.axis_breakdown,
         eval_result_id=row.id,
         eval_run_id=row.eval_run_id,

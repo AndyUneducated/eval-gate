@@ -11,7 +11,6 @@ issues cheap-model LLM calls. ``EVALGATE_MOCK_LLM=1`` forces fully-offline.
 
 from __future__ import annotations
 
-import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.badcase import finder
 from evalgate.badcase import repository as badcase_repo
+from evalgate.core.config import is_mock_llm
 from evalgate.core.logging import get_logger
 from evalgate.core.schemas import BadCaseOut, PromotionOut
 from evalgate.db.session import get_session
@@ -60,7 +60,7 @@ def _promotion_out(row: Any) -> PromotionOut:
 
 
 def _mock_enabled() -> bool:
-    return os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {"1", "true", "yes"}
+    return is_mock_llm()
 
 
 @router.get("/badcases", response_model=BadCaseListResponse)

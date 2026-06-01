@@ -12,20 +12,20 @@ that don't care about streaming. What changed:
 - Persistence now writes ``axis_breakdown`` and ``retrieved_contexts``
   (Phase 8/10 columns) when the evaluator returns them.
 - Phase 10: a ``SafetyPipeline.augment`` hook runs after ``evaluator.evaluate``
-  and merges ``axis_breakdown["safety"]`` plus a derived ``safety_violation``
-  before persistence, so generic / rag / agent paths all carry the safety
+  and merges ``axis_breakdown["safety"]`` before persistence, so generic /
+  rag / agent paths all carry the safety
   axis without each evaluator caring.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.core.config import is_mock_llm
 from evalgate.core.schemas import EvalRecord
 from evalgate.eval_set import repository as eval_set_repo
 from evalgate.evaluator.base import EvaluationOutcome, UnsupportedTaskTypeError
@@ -47,7 +47,7 @@ class RunResult:
 def _mock_enabled(explicit: bool | None) -> bool:
     if explicit is not None:
         return explicit
-    return os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {"1", "true", "yes"}
+    return is_mock_llm()
 
 
 async def _persist_outcome(
@@ -68,7 +68,6 @@ async def _persist_outcome(
         reason=outcome.reason,
         cost_usd=outcome.cost_usd,
         latency_ms=outcome.latency_ms,
-        safety_violation=outcome.safety_violation,
         judge_confidence=outcome.confidence,
         judge_raw=outcome.judge_raw,
         axis_breakdown=outcome.axis_breakdown,
@@ -135,7 +134,6 @@ async def iter_eval(
             score=outcome.score,
             cost_usd=outcome.cost_usd,
             latency_ms=outcome.latency_ms,
-            safety_violation=outcome.safety_violation,
             axis_breakdown=outcome.axis_breakdown,
             judge_confidence=outcome.confidence,
             error=outcome.error,

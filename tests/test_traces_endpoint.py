@@ -43,7 +43,7 @@ async def test_ingest_traces_rejects_missing_ids(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
-async def test_run_evals_returns_four_axis_report(client: AsyncClient) -> None:
+async def test_run_evals_returns_three_scalar_axes_without_safety_breakdown(client: AsyncClient) -> None:
     records = [
         {"case_id": "c1", "tags": ["qa"], "score": 0.9, "cost_usd": 0.01, "latency_ms": 1000},
         {"case_id": "c2", "tags": ["qa"], "score": 0.85, "cost_usd": 0.011, "latency_ms": 1100},
@@ -56,5 +56,4 @@ async def test_run_evals_returns_four_axis_report(client: AsyncClient) -> None:
         "quality",
         "cost",
         "latency_p95",
-        "safety",
     }

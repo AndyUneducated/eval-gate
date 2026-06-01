@@ -35,7 +35,7 @@ def _summarize(
     passed: bool,
 ) -> str:
     if passed:
-        return "All four axes within tolerance."
+        return "All axes within tolerance."
     failed = [axis.name for axis in axes if not axis.passed]
     parts = [f"Regressed axes: {', '.join(failed)}."]
     # Phase 8/10: when an axis regressed *because of* a nested sub-metric,

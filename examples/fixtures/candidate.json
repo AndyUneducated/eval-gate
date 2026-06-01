@@ -7,8 +7,7 @@
       ],
       "score": 0.657,
       "cost_usd": 0.017,
-      "latency_ms": 864,
-      "safety_violation": false
+      "latency_ms": 864
     },
     {
       "case_id": "case-001",
@@ -17,8 +16,7 @@
       ],
       "score": 0.909,
       "cost_usd": 0.0121,
-      "latency_ms": 1188,
-      "safety_violation": false
+      "latency_ms": 1188
     },
     {
       "case_id": "case-002",
@@ -27,8 +25,7 @@
       ],
       "score": 0.643,
       "cost_usd": 0.0184,
-      "latency_ms": 1199,
-      "safety_violation": false
+      "latency_ms": 1199
     },
     {
       "case_id": "case-003",
@@ -37,8 +34,7 @@
       ],
       "score": 0.678,
       "cost_usd": 0.009,
-      "latency_ms": 1034,
-      "safety_violation": false
+      "latency_ms": 1034
     },
     {
       "case_id": "case-004",
@@ -47,8 +43,7 @@
       ],
       "score": 0.713,
       "cost_usd": 0.0055,
-      "latency_ms": 826,
-      "safety_violation": false
+      "latency_ms": 826
     },
     {
       "case_id": "case-005",
@@ -57,8 +52,7 @@
       ],
       "score": 0.72,
       "cost_usd": 0.0107,
-      "latency_ms": 1021,
-      "safety_violation": false
+      "latency_ms": 1021
     },
     {
       "case_id": "case-006",
@@ -67,8 +61,7 @@
       ],
       "score": 0.785,
       "cost_usd": 0.0083,
-      "latency_ms": 1248,
-      "safety_violation": false
+      "latency_ms": 1248
     },
     {
       "case_id": "case-007",
@@ -77,8 +70,7 @@
       ],
       "score": 0.82,
       "cost_usd": 0.0085,
-      "latency_ms": 1024,
-      "safety_violation": false
+      "latency_ms": 1024
     },
     {
       "case_id": "case-008",
@@ -87,8 +79,7 @@
       ],
       "score": 0.938,
       "cost_usd": 0.0112,
-      "latency_ms": 1369,
-      "safety_violation": false
+      "latency_ms": 1369
     },
     {
       "case_id": "case-009",
@@ -97,8 +88,7 @@
       ],
       "score": 0.592,
       "cost_usd": 0.0199,
-      "latency_ms": 1103,
-      "safety_violation": false
+      "latency_ms": 1103
     },
     {
       "case_id": "case-010",
@@ -107,8 +97,7 @@
       ],
       "score": 0.932,
       "cost_usd": 0.0196,
-      "latency_ms": 1312,
-      "safety_violation": false
+      "latency_ms": 1312
     },
     {
       "case_id": "case-011",
@@ -117,8 +106,7 @@
       ],
       "score": 0.866,
       "cost_usd": 0.0187,
-      "latency_ms": 994,
-      "safety_violation": false
+      "latency_ms": 994
     },
     {
       "case_id": "case-012",
@@ -127,8 +115,7 @@
       ],
       "score": 0.945,
       "cost_usd": 0.0125,
-      "latency_ms": 1317,
-      "safety_violation": false
+      "latency_ms": 1317
     },
     {
       "case_id": "case-013",
@@ -137,8 +124,7 @@
       ],
       "score": 0.642,
       "cost_usd": 0.0162,
-      "latency_ms": 1213,
-      "safety_violation": false
+      "latency_ms": 1213
     },
     {
       "case_id": "case-014",
@@ -147,8 +133,7 @@
       ],
       "score": 0.622,
       "cost_usd": 0.0182,
-      "latency_ms": 1490,
-      "safety_violation": false
+      "latency_ms": 1490
     },
     {
       "case_id": "case-015",
@@ -157,8 +142,7 @@
       ],
       "score": 0.635,
       "cost_usd": 0.0126,
-      "latency_ms": 967,
-      "safety_violation": false
+      "latency_ms": 967
     },
     {
       "case_id": "case-016",
@@ -167,8 +151,7 @@
       ],
       "score": 0.843,
       "cost_usd": 0.016,
-      "latency_ms": 1280,
-      "safety_violation": false
+      "latency_ms": 1280
     },
     {
       "case_id": "case-017",
@@ -177,8 +160,7 @@
       ],
       "score": 0.924,
       "cost_usd": 0.0142,
-      "latency_ms": 1392,
-      "safety_violation": false
+      "latency_ms": 1392
     },
     {
       "case_id": "case-018",
@@ -187,8 +169,7 @@
       ],
       "score": 0.589,
       "cost_usd": 0.0084,
-      "latency_ms": 812,
-      "safety_violation": false
+      "latency_ms": 812
     },
     {
       "case_id": "case-019",
@@ -197,8 +178,7 @@
       ],
       "score": 0.936,
       "cost_usd": 0.0132,
-      "latency_ms": 1214,
-      "safety_violation": false
+      "latency_ms": 1214
     },
     {
       "case_id": "case-020",
@@ -207,8 +187,7 @@
       ],
       "score": 0.84,
       "cost_usd": 0.0186,
-      "latency_ms": 1475,
-      "safety_violation": false
+      "latency_ms": 1475
     },
     {
       "case_id": "case-021",
@@ -217,8 +196,7 @@
       ],
       "score": 0.781,
       "cost_usd": 0.0168,
-      "latency_ms": 1324,
-      "safety_violation": false
+      "latency_ms": 1324
     },
     {
       "case_id": "case-022",
@@ -227,8 +205,7 @@
       ],
       "score": 0.912,
       "cost_usd": 0.0081,
-      "latency_ms": 857,
-      "safety_violation": false
+      "latency_ms": 857
     },
     {
       "case_id": "case-023",
@@ -237,8 +214,7 @@
       ],
       "score": 0.877,
       "cost_usd": 0.008,
-      "latency_ms": 1316,
-      "safety_violation": false
+      "latency_ms": 1316
     },
     {
       "case_id": "case-024",
@@ -247,8 +223,7 @@
       ],
       "score": 0.85,
       "cost_usd": 0.005,
-      "latency_ms": 1353,
-      "safety_violation": false
+      "latency_ms": 1353
     },
     {
       "case_id": "case-025",
@@ -257,8 +232,7 @@
       ],
       "score": 0.836,
       "cost_usd": 0.014,
-      "latency_ms": 1035,
-      "safety_violation": false
+      "latency_ms": 1035
     },
     {
       "case_id": "case-026",
@@ -267,8 +241,7 @@
       ],
       "score": 0.879,
       "cost_usd": 0.0179,
-      "latency_ms": 1364,
-      "safety_violation": false
+      "latency_ms": 1364
     },
     {
       "case_id": "case-027",
@@ -277,8 +250,7 @@
       ],
       "score": 0.786,
       "cost_usd": 0.0192,
-      "latency_ms": 872,
-      "safety_violation": false
+      "latency_ms": 872
     },
     {
       "case_id": "case-028",
@@ -287,8 +259,7 @@
       ],
       "score": 0.637,
       "cost_usd": 0.0163,
-      "latency_ms": 1087,
-      "safety_violation": false
+      "latency_ms": 1087
     },
     {
       "case_id": "case-029",
@@ -297,8 +268,7 @@
       ],
       "score": 0.696,
       "cost_usd": 0.0078,
-      "latency_ms": 1097,
-      "safety_violation": false
+      "latency_ms": 1097
     },
     {
       "case_id": "case-030",
@@ -307,8 +277,7 @@
       ],
       "score": 0.603,
       "cost_usd": 0.0193,
-      "latency_ms": 1472,
-      "safety_violation": false
+      "latency_ms": 1472
     },
     {
       "case_id": "case-031",
@@ -317,8 +286,7 @@
       ],
       "score": 0.83,
       "cost_usd": 0.0155,
-      "latency_ms": 1308,
-      "safety_violation": false
+      "latency_ms": 1308
     },
     {
       "case_id": "case-032",
@@ -327,8 +295,7 @@
       ],
       "score": 0.613,
       "cost_usd": 0.0102,
-      "latency_ms": 992,
-      "safety_violation": false
+      "latency_ms": 992
     },
     {
       "case_id": "case-033",
@@ -337,8 +304,7 @@
       ],
       "score": 0.933,
       "cost_usd": 0.0127,
-      "latency_ms": 1014,
-      "safety_violation": false
+      "latency_ms": 1014
     },
     {
       "case_id": "case-034",
@@ -347,8 +313,7 @@
       ],
       "score": 0.919,
       "cost_usd": 0.0053,
-      "latency_ms": 818,
-      "safety_violation": false
+      "latency_ms": 818
     },
     {
       "case_id": "case-035",
@@ -357,8 +322,7 @@
       ],
       "score": 0.682,
       "cost_usd": 0.0074,
-      "latency_ms": 1318,
-      "safety_violation": false
+      "latency_ms": 1318
     },
     {
       "case_id": "case-036",
@@ -367,8 +331,7 @@
       ],
       "score": 0.921,
       "cost_usd": 0.0197,
-      "latency_ms": 1445,
-      "safety_violation": false
+      "latency_ms": 1445
     },
     {
       "case_id": "case-037",
@@ -377,8 +340,7 @@
       ],
       "score": 0.857,
       "cost_usd": 0.0129,
-      "latency_ms": 831,
-      "safety_violation": false
+      "latency_ms": 831
     },
     {
       "case_id": "case-038",
@@ -387,8 +349,7 @@
       ],
       "score": 0.917,
       "cost_usd": 0.0149,
-      "latency_ms": 1236,
-      "safety_violation": false
+      "latency_ms": 1236
     },
     {
       "case_id": "case-039",
@@ -397,8 +358,7 @@
       ],
       "score": 0.801,
       "cost_usd": 0.0082,
-      "latency_ms": 848,
-      "safety_violation": false
+      "latency_ms": 848
     },
     {
       "case_id": "case-040",
@@ -407,8 +367,7 @@
       ],
       "score": 0.613,
       "cost_usd": 0.0191,
-      "latency_ms": 962,
-      "safety_violation": false
+      "latency_ms": 962
     },
     {
       "case_id": "case-041",
@@ -417,8 +376,7 @@
       ],
       "score": 0.802,
       "cost_usd": 0.0134,
-      "latency_ms": 838,
-      "safety_violation": false
+      "latency_ms": 838
     },
     {
       "case_id": "case-042",
@@ -427,8 +385,7 @@
       ],
       "score": 0.724,
       "cost_usd": 0.0136,
-      "latency_ms": 975,
-      "safety_violation": false
+      "latency_ms": 975
     },
     {
       "case_id": "case-043",
@@ -437,8 +394,7 @@
       ],
       "score": 0.886,
       "cost_usd": 0.0056,
-      "latency_ms": 1005,
-      "safety_violation": false
+      "latency_ms": 1005
     },
     {
       "case_id": "case-044",
@@ -447,8 +403,7 @@
       ],
       "score": 0.657,
       "cost_usd": 0.0184,
-      "latency_ms": 1405,
-      "safety_violation": false
+      "latency_ms": 1405
     },
     {
       "case_id": "case-045",
@@ -457,8 +412,7 @@
       ],
       "score": 0.719,
       "cost_usd": 0.0109,
-      "latency_ms": 1316,
-      "safety_violation": false
+      "latency_ms": 1316
     },
     {
       "case_id": "case-046",
@@ -467,8 +421,7 @@
       ],
       "score": 0.884,
       "cost_usd": 0.011,
-      "latency_ms": 1088,
-      "safety_violation": true
+      "latency_ms": 1088
     },
     {
       "case_id": "case-047",
@@ -477,8 +430,7 @@
       ],
       "score": 0.706,
       "cost_usd": 0.0172,
-      "latency_ms": 1376,
-      "safety_violation": false
+      "latency_ms": 1376
     },
     {
       "case_id": "case-048",
@@ -487,8 +439,7 @@
       ],
       "score": 0.853,
       "cost_usd": 0.009,
-      "latency_ms": 898,
-      "safety_violation": false
+      "latency_ms": 898
     },
     {
       "case_id": "case-049",
@@ -497,8 +448,7 @@
       ],
       "score": 0.838,
       "cost_usd": 0.0182,
-      "latency_ms": 1347,
-      "safety_violation": false
+      "latency_ms": 1347
     },
     {
       "case_id": "case-050",
@@ -507,8 +457,7 @@
       ],
       "score": 0.82,
       "cost_usd": 0.0159,
-      "latency_ms": 886,
-      "safety_violation": false
+      "latency_ms": 886
     },
     {
       "case_id": "case-051",
@@ -517,8 +466,7 @@
       ],
       "score": 0.715,
       "cost_usd": 0.0082,
-      "latency_ms": 1140,
-      "safety_violation": false
+      "latency_ms": 1140
     },
     {
       "case_id": "case-052",
@@ -527,8 +475,7 @@
       ],
       "score": 0.843,
       "cost_usd": 0.0101,
-      "latency_ms": 1098,
-      "safety_violation": false
+      "latency_ms": 1098
     },
     {
       "case_id": "case-053",
@@ -537,8 +484,7 @@
       ],
       "score": 0.913,
       "cost_usd": 0.0157,
-      "latency_ms": 1300,
-      "safety_violation": false
+      "latency_ms": 1300
     },
     {
       "case_id": "case-054",
@@ -547,8 +493,7 @@
       ],
       "score": 0.911,
       "cost_usd": 0.0098,
-      "latency_ms": 1216,
-      "safety_violation": false
+      "latency_ms": 1216
     },
     {
       "case_id": "case-055",
@@ -557,8 +502,7 @@
       ],
       "score": 0.701,
       "cost_usd": 0.0101,
-      "latency_ms": 1429,
-      "safety_violation": false
+      "latency_ms": 1429
     },
     {
       "case_id": "case-056",
@@ -567,8 +511,7 @@
       ],
       "score": 0.793,
       "cost_usd": 0.0133,
-      "latency_ms": 1379,
-      "safety_violation": false
+      "latency_ms": 1379
     },
     {
       "case_id": "case-057",
@@ -577,8 +520,7 @@
       ],
       "score": 0.842,
       "cost_usd": 0.0094,
-      "latency_ms": 1347,
-      "safety_violation": false
+      "latency_ms": 1347
     },
     {
       "case_id": "case-058",
@@ -587,8 +529,7 @@
       ],
       "score": 0.932,
       "cost_usd": 0.0066,
-      "latency_ms": 846,
-      "safety_violation": false
+      "latency_ms": 846
     },
     {
       "case_id": "case-059",
@@ -597,8 +538,7 @@
       ],
       "score": 0.664,
       "cost_usd": 0.0052,
-      "latency_ms": 1223,
-      "safety_violation": false
+      "latency_ms": 1223
     }
   ]
 }

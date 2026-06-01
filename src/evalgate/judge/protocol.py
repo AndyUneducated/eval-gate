@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import litellm
 
@@ -28,6 +28,10 @@ litellm.drop_params = True
 
 # Capture both `score: 0.7`, `score = 0.7`, and `score is 0.7` styles.
 _SCORE_RE = re.compile(r'"?score"?\s*(?:[:=]|\bis\b)\s*([0-9]*\.?[0-9]+)', re.IGNORECASE)
+
+# Max stdev of scores in [0, 1] (half at 0, half at 1). Used by self-consistency
+# and multi-judge confidence spread terms.
+MAX_STD_SCORE_SPREAD = 0.5
 
 
 # Provider-specific kwargs that force thinking OFF. Applied via `setdefault`
@@ -68,6 +72,31 @@ def thinking_off_kwargs(model: str) -> dict[str, Any]:
         if m.startswith(prefix):
             return dict(kwargs)
     return {}
+
+
+@dataclass
+class LeafVerdict:
+    """Unified return from a leaf judge (pointwise or position-swap)."""
+
+    score: float
+    agreement: bool | None
+    calls: list[JudgeCallRecord]
+
+
+class LeafJudge(Protocol):
+    """PointwiseJudge or PositionSwapJudge — same ``score`` contract."""
+
+    model: str
+
+    async def score(
+        self,
+        case_input: Any,
+        candidate_output: str,
+        reference_output: str | None,
+        *,
+        sub_run_index: int,
+        mock: bool,
+    ) -> LeafVerdict: ...
 
 
 @dataclass
@@ -117,7 +146,7 @@ async def acompletion_json(
         resp = await litellm.acompletion(**kwargs)
     except Exception as exc:
         return "", {"error": f"judge-call-failed: {exc}"}
-    return _extract_text(resp), _to_dict(resp)
+    return extract_text(resp), to_dict(resp)
 
 
 def parse_score(text: str) -> tuple[float, str]:
@@ -201,14 +230,14 @@ def stringify(value: Any) -> str:
         return str(value)
 
 
-def _extract_text(resp: Any) -> str:
+def extract_text(resp: Any) -> str:
     try:
         return resp["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
         return ""
 
 
-def _to_dict(resp: Any) -> dict[str, Any]:
+def to_dict(resp: Any) -> dict[str, Any]:
     if hasattr(resp, "model_dump"):
         try:
             return resp.model_dump()

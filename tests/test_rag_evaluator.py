@@ -56,7 +56,6 @@ def _spec(corpus_path: Path) -> PromptSpec:
         judges=[JudgeSpec(model="ollama/qwen3.5:9b", rubric="rate")],
         judge_policy=JudgePolicySpec(mode="pointwise"),
         retriever=RetrieverSpec(
-            kind="embedding",
             corpus_path=str(corpus_path),
             embedding_model="ollama/qwen3-embedding:8b",
             top_k=2,

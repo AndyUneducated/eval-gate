@@ -30,7 +30,6 @@ def _make_records(seed: int, regress_tag: str | None = None) -> list[dict]:
                 "score": round(max(0.0, min(1.0, score)), 3),
                 "cost_usd": round(rng.uniform(0.005, 0.02), 4),
                 "latency_ms": rng.randint(800, 1500),
-                "safety_violation": rng.random() < 0.02,
             }
         )
     return records

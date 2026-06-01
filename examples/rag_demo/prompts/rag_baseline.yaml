@@ -30,7 +30,6 @@ judge_policy:
   concurrency: 4
 
 retriever:
-  kind: embedding
   corpus_path: examples/rag_demo/corpus.json
   embedding_model: ollama/qwen3-embedding:8b
   top_k: 3

@@ -36,7 +36,6 @@ def corpus_path(tmp_path: Path) -> Path:
 
 def _spec(corpus_path: Path, top_k: int = 2) -> RetrieverSpec:
     return RetrieverSpec(
-        kind="embedding",
         corpus_path=str(corpus_path),
         embedding_model="ollama/qwen3-embedding:8b",
         top_k=top_k,
@@ -71,7 +70,6 @@ async def test_retrieve_varies_with_query(corpus_path: Path):
 @pytest.mark.asyncio
 async def test_missing_corpus_raises_filenotfound(tmp_path: Path):
     spec = RetrieverSpec(
-        kind="embedding",
         corpus_path=str(tmp_path / "ghost.json"),
         embedding_model="ollama/qwen3-embedding:8b",
     )

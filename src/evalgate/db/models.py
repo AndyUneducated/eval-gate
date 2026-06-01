@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -219,7 +218,6 @@ class EvalResultRow(Base):
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    safety_violation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Phase 17 forward-compat: populated later by MultiJudge / calibration.
     judge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     judge_raw: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)

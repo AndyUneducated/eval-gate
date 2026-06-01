@@ -1,18 +1,7 @@
-"""Build the four-axis CI gate report (quality / cost / latency_p95 / safety).
+"""Build the CI gate report (quality / cost / latency_p95 / safety).
 
-Each axis specifies:
-  - how to extract a per-case scalar from an eval record,
-  - how to aggregate it across cases (mean or p95),
-  - whether higher or lower is better.
-
-Mean-aggregated axes use a bootstrap CI to decide significance; p95-aggregated
-axes use a simple threshold delta (significance bootstrapping for p95 is a
-follow-up — its statistical interpretation is different).
-
-Phase 8/10: any record may carry ``axis_breakdown[<axis>]`` (a per-metric
-dict). When present, each main axis grows nested ``sub_metrics`` axes — one
-per inner key — that share the parent axis's direction. ``passed`` for the
-parent axis is then ``main_passed AND all(sub.passed)``.
+Mean-aggregated axes use bootstrap CI; p95 uses a simple threshold delta.
+Safety is breakdown-only: no mean scalar — ``passed = all(sub_metrics.passed)``.
 """
 
 from __future__ import annotations
@@ -30,6 +19,9 @@ Direction = Literal["higher_is_better", "lower_is_better"]
 Aggregator = Literal["mean", "p95"]
 
 EvalRecord = dict[str, Any]
+
+SAFETY_AXIS = "safety"
+SAFETY_DIRECTION: Direction = "lower_is_better"
 
 
 @dataclass(frozen=True)
@@ -67,22 +59,10 @@ AXES: tuple[AxisSpec, ...] = (
         extractor=lambda r: float(r.get("latency_ms", 0.0)),
         aggregator="p95",
     ),
-    AxisSpec(
-        name="safety",
-        direction="lower_is_better",
-        extractor=lambda r: 1.0 if r.get("safety_violation") else 0.0,
-        aggregator="mean",
-    ),
 )
 
-
-# Which gate axis names get nested sub-metric axes from
-# ``record["axis_breakdown"][<name>]``. Each sub-axis inherits the parent
-# axis's direction (RAG quality metrics are higher_is_better; safety
-# rates are lower_is_better).
 _SUB_AXIS_PARENTS: dict[str, Direction] = {
     "quality": "higher_is_better",
-    "safety": "lower_is_better",
 }
 
 
@@ -112,8 +92,6 @@ def build_axis_metrics(
             else:
                 regressed = significant and delta > 0
         elif spec.aggregator == "p95" and b_vals and c_vals:
-            # p95 bootstrap is a follow-up (different statistical story). Until
-            # then, any worsening tail delta fails the axis outright.
             ci_low = ci_high = None
             significant = False
             regressed = delta < 0 if spec.direction == "higher_is_better" else delta > 0
@@ -147,6 +125,29 @@ def build_axis_metrics(
                 sub_metrics=sub_metrics,
             )
         )
+
+    safety_subs = _build_sub_metric_axes(
+        baseline,
+        candidate,
+        axis_name=SAFETY_AXIS,
+        direction=SAFETY_DIRECTION,
+    )
+    if safety_subs:
+        sub_regressed = any(not s.passed for s in safety_subs.values())
+        metrics.append(
+            AxisMetric(
+                name=SAFETY_AXIS,
+                baseline=0.0,
+                candidate=0.0,
+                delta=0.0,
+                ci_low=None,
+                ci_high=None,
+                significant=False,
+                passed=not sub_regressed,
+                sub_metrics=safety_subs,
+            )
+        )
+
     return metrics
 
 
@@ -157,19 +158,6 @@ def _build_sub_metric_axes(
     axis_name: str,
     direction: Direction,
 ) -> dict[str, AxisMetric] | None:
-    """Phase 8/10: when records carry ``axis_breakdown[axis_name]``, build one
-    mean axis per inner key and nest them under the parent axis. Each sub-axis
-    inherits ``direction`` from the parent.
-
-    Returns ``None`` when no record (in either side) carries breakdown for
-    this axis, so the gate report stays unchanged for runs that don't emit
-    that axis (e.g. generic-only runs without RAG or safety).
-
-    Records without a given sub-metric simply don't contribute to it — we
-    only aggregate over records where the metric is present. That keeps
-    mixed-task eval sets sensible (a generic case alongside a RAG case
-    won't pull faithfulness toward zero).
-    """
     names: set[str] = set()
     for rec in list(baseline) + list(candidate):
         bucket = _bucket(rec, axis_name)
