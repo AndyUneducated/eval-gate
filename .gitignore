@@ -50,3 +50,7 @@ data/
 
 # Generated gate reports (CI artifact / local make ci-gate output)
 gate-report.json
+
+# Smoke-script scratch (defensive: smokes now write to the system temp dir)
+.phase*-runs/
+.phase*.db

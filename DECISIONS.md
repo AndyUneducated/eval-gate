@@ -22,6 +22,7 @@
 | **ADR-007** | 用 `uv` 管包 | accepted | 速度快、单二进制、PEP 621 兼容 |
 | **ADR-008** | LiteLLM 统一 LLM 调用 | accepted（Phase 5） | 一个接口调 100+ provider，支撑 cross-vote |
 | **ADR-009** | CI gate 跑 mock judge + ephemeral SQLite | accepted（Phase 12） | CI 离线确定性零成本，真模型走 `make ci-gate-real` |
+| **ADR-010** | Shadow Mode：SDK 侧打分 + on-demand rollup | accepted（Phase 13） | 后端保持薄层，复用 `EvalRecord` + `build_gate_report`，不背 scheduler 依赖 |
 
 > 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
 
@@ -101,7 +102,7 @@
 
 **Decision**：CI gate 必备三件套 —
 1. **多轴**：quality / cost / latency_p95 / safety 四轴并联，任一轴 regress 即 fail。
-2. **统计显著性**：mean 类轴用 **bootstrap CI（1000 次重采样，95%）**，CI 不跨 0 才算真 regression。p95 类轴 v1 先用阈值（重采样的 p95 解释比较微妙，留待 Phase 14 复盘）。
+2. **统计显著性**：mean 类轴用 **bootstrap CI（1000 次重采样，95%）**，CI 不跨 0 才算真 regression。p95 类轴 v1 先用阈值（重采样的 p95 解释比较微妙，留待 Phase 17 复盘）。
 3. **tag 归因**：每条 case 打 tag，failed 时报告"哪个 tag 簇集体跌了"，而不是只给整体数字。
 
 **Rationale**：
@@ -112,7 +113,7 @@
 **Consequences**：
 - Bootstrap 计算量 = O(N × resamples)，对 eval set 几百条 × 1000 重采样在毫秒级，相比 judge 调用本身可忽略。
 - Tag 维护成本下放给应用方（在 prompt / case 里手工或半自动打 tag）。
-- p95 显著性留了技术债，Phase 14 要复盘。
+- p95 显著性留了技术债，Phase 17 要复盘。
 
 ---
 
@@ -218,5 +219,30 @@
 
 **Consequences**：
 - CI 不会自动抓真实质量回归 —— 那是 consumer 仓库接入后在它们的 prompt PR 上、或本仓库手动 `make ci-gate-real` 时才发生。退出标准里"改差 prompt → CI fail + 归因"是用真模型在本地复现的（实测 ~140s）。
-- mock judge 恒返 0.5，所以 CI 这步无法验证"显著性判定"本身的正确性 —— 那由 `report/significance.py` 的单测和 Phase 14 的复现实验覆盖。
+- mock judge 恒返 0.5，所以 CI 这步无法验证"显著性判定"本身的正确性 —— 那由 `report/significance.py` 的单测和 Phase 17 的复现实验覆盖。
 - 想在 CI 上真跑模型，需要自备 self-hosted runner + 模型，经 `workflow_dispatch` 去 mock。
+
+---
+
+## ADR-010 · Shadow Mode 在 SDK 侧打分，rollup 走 on-demand 而非内置 scheduler
+
+**Date**: 2026-06-11 · **Status**: accepted（Phase 13）
+
+**Context**：Shadow Mode 要在生产流量上无害评测 candidate。两个绕不开的设计岔路：(1) 生产没有人工 ground truth，primary / candidate 的分数从哪来、谁来算？(2) "每小时滚动算一次 4 轴 + 报警" 这种周期任务，要不要在服务里塞一个定时器 / 后台 worker？
+
+**Decision**：
+- **打分放客户端 SDK**：`evalgate.shadow(...)` 命中采样后，后台并发跑 candidate，并复用 `build_judge_stack(primary)` 给 primary / candidate **两边用同一 rubric** 打 reference-free 分，打包成两条 `EvalRecord` 推到 `POST /v1/shadow/observe`。后端只做"写 observation + 按 `candidate_prompt_hash` 聚合"，不跑 judge。
+- **滚动报告 on-demand + 显式 rollup**：`GET /v1/shadow/reports` 实时算窗口内 4 轴（不落库）；`POST /v1/shadow/rollup`（及 `evalgate shadow rollup` CLI）才落一份 `shadow_reports` 快照并触发报警。生产用 cron 调 rollup，服务本身不内置定时器。
+
+**Rationale**：
+1. **后端薄 = 复用最大化**：observe 的 payload 正好是早就为 Phase 13 固化的 `EvalRecord` 契约（见 `core/schemas.py` 注释），滚动聚合直接喂 `gate.decision.build_gate_report`——shadow 与 PR CI **共用一套**四轴 + bootstrap CI + tag 归因 + `axis_breakdown` 子轴，零新统计代码。
+2. **打分天然在调用侧**：SDK 已经为跑 candidate 持有 `PromptSpec` 和 LiteLLM 通道，就地打分省一次"把两段输出回传后端再调一次 judge"的往返，也不必在后端起一个能访问 prompt 配置的 judge worker。
+3. **不背 scheduler 依赖**：1 人天的 phase 引入 APScheduler / 常驻 task 是过度工程；cron 调一个幂等 CLI 更符合"git-native / 配置外置"的项目调性（呼应 ADR-003），且 `compute_shadow_report` 是纯函数、易测。
+4. **绝不阻塞主路径**：fire-and-forget + 1s 超时 + 吞异常，shadow 慢/挂都不影响生产请求——这是 shadow 能上生产的前提。
+
+**Consequences**：
+- 打分用的是 primary 的 judge 栈：candidate 若想换更严的 rubric 评，需要显式扩展（当前刻意从简，保证两边可比）。
+- on-demand rollup 意味着"多久滚一次"是部署方的运维选择（cron 频率），服务不保证实时；报警延迟 = rollup 周期。
+- SDK 把 LiteLLM judge 调用带进了调用方进程：成本/延迟落在后台 task（不阻塞主路径），但确实是调用方在掏这次 judge 的 token。
+- 后台 task 需要强引用集合（`_BACKGROUND_TASKS`）防 GC——这是 asyncio fire-and-forget 的已知坑，已封装。
+- 报警是自建的 Slack 兼容 webhook（`{"text": ...}` + 无 URL 时降级日志），没有引入 Slack SDK；未来要富文本 / 多通道再扩。

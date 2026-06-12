@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -218,7 +219,7 @@ class EvalResultRow(Base):
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Phase 17 forward-compat: populated later by MultiJudge / calibration.
+    # Phase 16 forward-compat: populated later by MultiJudge / calibration.
     judge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     judge_raw: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
     # Phase 10 (was Phase 8 ``sub_metrics``): per-axis, per-metric breakdown.
@@ -243,7 +244,7 @@ class EvalJudgeCallRow(Base):
 
     With N sub-judges x K self-consistency x P position-swap (1 or 2), one
     eval_result can have up to N*K*P rows here. Storing per-call lets Phase
-    14 compute Cohen's kappa vs human labels and Phase 17 recompute calibration
+    17 compute Cohen's kappa vs human labels and Phase 16 recompute calibration
     without re-invoking the judge.
     """
 
@@ -267,6 +268,60 @@ class EvalJudgeCallRow(Base):
     winner: Mapped[str | None] = mapped_column(String, nullable=True)
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
     raw: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ShadowObservationRow(Base):
+    """Phase 13: one production-traffic shadow eval pair.
+
+    Each row pairs a ``primary`` EvalRecord (the response actually served to
+    the user) with a ``candidate`` EvalRecord (the shadow run, discarded),
+    both scored SDK-side before being pushed to ``POST /v1/shadow/observe``.
+    The rolling report groups by ``candidate_prompt_hash`` and feeds
+    ``primary_record`` -> baseline / ``candidate_record`` -> candidate into
+    ``gate.decision.build_gate_report`` unchanged (same 4 axes + attribution).
+
+    Both ``*_record`` columns store a full ``EvalRecord`` dump (``extra``
+    fields included) so the gate's extractors read the exact same keys they
+    do for ``evalgate run`` output.
+    """
+
+    __tablename__ = "shadow_observations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    case_id: Mapped[str] = mapped_column(String, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JsonType, default=list, nullable=False)
+    primary_prompt_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    candidate_prompt_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    primary_record: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
+    candidate_record: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+class ShadowReportRow(Base):
+    """Phase 13: a persisted snapshot of a rolling shadow gate report.
+
+    Written by ``shadow.rollup.run_rollup`` (the ``evalgate shadow rollup``
+    CLI / ``POST /v1/shadow/rollup`` endpoint). ``report`` is a serialised
+    ``GateReport``; ``passed`` mirrors ``report.passed`` so "did this
+    candidate ever regress" is a cheap boolean query. ``alerted`` records
+    whether the regression webhook actually fired for this snapshot.
+    """
+
+    __tablename__ = "shadow_reports"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    candidate_prompt_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    n_observations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    report: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
+    alerted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

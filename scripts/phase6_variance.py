@@ -29,14 +29,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_OK, mock_from_env
+
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / ".phase6-variance.db"
-RUNS = ROOT / ".phase6-runs"
+_SCRATCH = Path(tempfile.gettempdir()) / "evalgate-phase6"
+DB_PATH = _SCRATCH / "variance.db"
+RUNS = _SCRATCH / "runs"
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB_PATH}"
 
@@ -120,13 +125,13 @@ def _run_once(set_name: str, prompt_path: Path, out_path: Path) -> list[dict]:
         "--out",
         str(out_path),
     ]
-    if os.environ.get("EVALGATE_MOCK_LLM"):
+    if mock_from_env():
         cmd.append("--mock")
     res = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=ROOT)
     if res.returncode != 0:
         print(res.stdout)
         print(res.stderr, file=sys.stderr)
-        raise SystemExit(f"run failed: {prompt_path.name}")
+        raise SystemExit(EXIT_ERROR)
     return json.loads(out_path.read_text())["records"]
 
 
@@ -143,7 +148,8 @@ def _case_stdev_mean(per_run_records: list[list[dict]]) -> float:
 
 
 def main() -> int:
-    RUNS.mkdir(exist_ok=True)
+    print(f"mode={'mock' if mock_from_env() else 'real (Ollama)'}")
+    RUNS.mkdir(parents=True, exist_ok=True)
     n = int(os.environ.get("N", "3"))
     try:
         set_name = asyncio.run(_seed())
@@ -163,18 +169,42 @@ def main() -> int:
                 runs.append(_run_once(set_name, yaml_path, out))
             results[label] = runs
 
+        # Structural check: every config must have produced a full score matrix
+        # (n runs, each scoring every case) so the stdevs are well-defined.
+        for label, runs in results.items():
+            if len(runs) != n or any(len(run) != len(CASES) for run in runs):
+                print(
+                    f"ERROR: {label} produced an incomplete score matrix "
+                    f"({[len(r) for r in runs]} vs {n}x{len(CASES)})",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
+
+        stdevs = {label: _case_stdev_mean(runs) for label, runs in results.items()}
         print("\n## Phase 6 variance report\n")
         print(f"Cases: {len(CASES)}; Runs per config: {n}\n")
         print("| Config | Mean per-case score stdev (lower = more stable) |")
         print("|---|---|")
-        for label, runs in results.items():
-            mean_std = _case_stdev_mean(runs)
+        for label, mean_std in stdevs.items():
             print(f"| {label} | {mean_std:.4f} |")
 
-        return 0
+        # The "multi-judge reduces variance" claim is a *statistical tendency*,
+        # not a per-run invariant: at small N the per-case stdev estimate is very
+        # noisy, so we report the comparison rather than hard-failing on it (that
+        # would make the smoke flaky — see Fix #5 on small-N power). The headline
+        # reduction is established separately with adequate N + seeds (Phase 17).
+        single = stdevs["single_pointwise"]
+        multi = stdevs["multi_pairwise"]
+        if multi <= single + 1e-9:
+            print(f"\nclaim holds: multi-judge stdev {multi:.4f} <= single {single:.4f}.")
+        else:
+            print(
+                f"\nNOTE: multi-judge stdev {multi:.4f} > single {single:.4f} at N={n} "
+                "(underpowered — variance estimates are noisy at small N; not a failure).",
+            )
+        return EXIT_OK
     finally:
-        if DB_PATH.exists():
-            DB_PATH.unlink()
+        shutil.rmtree(_SCRATCH, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -129,7 +129,7 @@ async def add_judge_calls(
     """Bulk-insert per-call judge invocations bound to an EvalResultRow.
 
     Empty `calls` -> no-op (returns []), so callers don't need to guard.
-    Single `commit()` per result keeps Phase 16 streaming cheap.
+    Single `commit()` per result keeps Phase 15 streaming cheap.
     """
     if not calls:
         return []

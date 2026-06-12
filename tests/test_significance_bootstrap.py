@@ -32,6 +32,27 @@ def test_small_drop_below_noise_floor_is_not_significant() -> None:
     assert not result.significant
 
 
+def test_p95_statistic_point_estimate_and_significance() -> None:
+    # Point estimate uses p95, not mean: a heavy tail must move the delta.
+    base = [100.0] * 19 + [200.0]
+    cand = [100.0] * 19 + [900.0]
+    result = bootstrap_diff_ci(base, cand, statistic="p95", seed=0)
+    assert result.delta > 0  # p95 tail worsened
+    assert result.direction == "up"
+
+
+def test_p95_identical_tails_not_significant() -> None:
+    rng = np.random.default_rng(3)
+    sample = rng.normal(1000, 50, 40).tolist()
+    result = bootstrap_diff_ci(sample, list(sample), statistic="p95", seed=0)
+    assert not result.significant
+
+
+def test_unknown_statistic_raises() -> None:
+    with pytest.raises(KeyError):
+        bootstrap_diff_ci([1.0], [1.0], statistic="median")
+
+
 def test_empty_inputs_raise() -> None:
     with pytest.raises(ValueError, match="at least one value"):
         bootstrap_diff_ci([], [0.5])

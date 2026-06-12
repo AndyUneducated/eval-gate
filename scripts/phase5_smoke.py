@@ -13,13 +13,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_OK, mock_from_env
+
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / ".phase5-smoke.db"
-RUNS = ROOT / ".phase5-runs"
+_SCRATCH = Path(tempfile.gettempdir()) / "evalgate-phase5"
+DB_PATH = _SCRATCH / "smoke.db"
+RUNS = _SCRATCH / "runs"
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB_PATH}"
 
@@ -62,14 +67,14 @@ def _run(set_name: str, prompt_path: Path, out_path: Path) -> dict:
         "--out",
         str(out_path),
     ]
-    if os.environ.get("EVALGATE_MOCK_LLM"):
+    if mock_from_env():
         cmd.append("--mock")
     print(f"\n$ {' '.join(cmd)}")
     res = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=ROOT)
     if res.returncode != 0:
         print(res.stdout)
         print(res.stderr, file=sys.stderr)
-        raise SystemExit(f"run failed: {prompt_path.name}")
+        raise SystemExit(EXIT_ERROR)
     summary = json.loads(res.stdout)
     print(json.dumps(summary, indent=2))
     return summary
@@ -94,19 +99,32 @@ def _gate(baseline: Path, candidate: Path) -> int:
 
 
 def main() -> int:
-    RUNS.mkdir(exist_ok=True)
+    print(f"mode={'mock' if mock_from_env() else 'real (Ollama)'}")
+    RUNS.mkdir(parents=True, exist_ok=True)
     try:
         set_name = asyncio.run(_seed())
         baseline = RUNS / "baseline.json"
         candidate = RUNS / "candidate.json"
-        _run(set_name, ROOT / "examples/prompts/baseline.yaml", baseline)
-        _run(set_name, ROOT / "examples/prompts/candidate.yaml", candidate)
+        base_summary = _run(set_name, ROOT / "examples/prompts/baseline.yaml", baseline)
+        cand_summary = _run(set_name, ROOT / "examples/prompts/candidate.yaml", candidate)
         gate_rc = _gate(baseline, candidate)
         print(f"\nGate exit code: {gate_rc} (0 = pass, 1 = regressed)")
-        return 0
+        # Connectivity smoke: both runs must score all 3 cases and the gate must
+        # run end to end (exit 0/1, not a crash). It does not assert a regression
+        # because mock baseline/candidate are identical.
+        for label, summary in (("baseline", base_summary), ("candidate", cand_summary)):
+            if int(summary.get("total_cases", 0)) != 3:
+                print(
+                    f"ERROR: {label} scored {summary.get('total_cases')} cases, want 3",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
+        if gate_rc not in (0, 1):
+            print(f"ERROR: gate did not run cleanly (rc={gate_rc})", file=sys.stderr)
+            return EXIT_ERROR
+        return EXIT_OK
     finally:
-        if DB_PATH.exists():
-            DB_PATH.unlink()
+        shutil.rmtree(_SCRATCH, ignore_errors=True)
 
 
 if __name__ == "__main__":

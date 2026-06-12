@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+import tempfile
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_FAILED, EXIT_OK, mock_from_env
+
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / ".phase7-smoke.db"
+DB_PATH = Path(tempfile.gettempdir()) / "evalgate-phase7-smoke.db"
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB_PATH}"
-os.environ.setdefault("EVALGATE_MOCK_LLM", "1")
 
 _PROMPT_YAML = """
 name: smoke
@@ -51,7 +54,7 @@ async def _bootstrap_schema():
     await engine.dispose()
 
 
-async def _seed_eval_sets(prompt_path: Path):
+async def _seed_eval_sets(prompt_path: Path, *, mock: bool):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from evalgate.eval_set import repository
@@ -75,13 +78,13 @@ async def _seed_eval_sets(prompt_path: Path):
             session,
             eval_set_id_or_name="phase7-src",
             prompt_path=str(prompt_path),
-            mock=True,
+            mock=mock,
         )
     await engine.dispose()
     return result
 
 
-async def _list_and_promote():
+async def _list_and_promote(*, mock: bool) -> int:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from evalgate.badcase import finder
@@ -92,7 +95,7 @@ async def _list_and_promote():
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with factory() as session:
-        badcases = await finder.find(session, strategy="uncertainty", limit=3, mock=True)
+        badcases = await finder.find(session, strategy="uncertainty", limit=3, mock=mock)
 
     print(f"\nFound {len(badcases)} uncertainty badcases:")
     for bc in badcases:
@@ -121,17 +124,26 @@ async def _list_and_promote():
         dst_cases = await set_repo.list_cases(session, dst_id)
     print(f"\nTarget eval_set phase7-hard now has {len(dst_cases)} cases.")
     await engine.dispose()
+    return len(dst_cases)
 
 
 def main() -> int:
-    prompt_path = ROOT / ".phase7-prompt.yaml"
+    mock = mock_from_env(default=True)
+    print(f"mode={'mock' if mock else 'real (Ollama)'}")
+    prompt_path = Path(tempfile.gettempdir()) / "evalgate-phase7-prompt.yaml"
     prompt_path.write_text(_PROMPT_YAML)
     try:
         asyncio.run(_bootstrap_schema())
-        result = asyncio.run(_seed_eval_sets(prompt_path))
+        result = asyncio.run(_seed_eval_sets(prompt_path, mock=mock))
         print(f"Ran {result.total_cases} cases; mean_score={result.mean_score}")
-        asyncio.run(_list_and_promote())
-        return 0
+        if result.total_cases != 10:
+            print(f"ERROR: expected 10 cases, ran {result.total_cases}", file=sys.stderr)
+            return EXIT_ERROR
+        n_promoted = asyncio.run(_list_and_promote(mock=mock))
+        if n_promoted <= 0:
+            print("FAILED: BadCaseFinder promoted no cases to phase7-hard", file=sys.stderr)
+            return EXIT_FAILED
+        return EXIT_OK
     finally:
         if DB_PATH.exists():
             DB_PATH.unlink()

@@ -31,6 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_OK, mock_from_env
 from examples.rag_demo.seed import CASES, SET_NAME, seed
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -77,7 +78,7 @@ async def _run_one(database_url: str, set_id: str, prompt_yaml: Path) -> dict:
 
 
 async def _amain() -> int:
-    is_mock = os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {"1", "true", "yes"}
+    is_mock = mock_from_env()
 
     # Default to a temp SQLite so the script works without Postgres.
     if not os.environ.get("DATABASE_URL"):
@@ -112,7 +113,7 @@ async def _amain() -> int:
                     f"axis_breakdown.quality={sm} (want {expected_metrics})",
                     file=sys.stderr,
                 )
-                return 2
+                return EXIT_ERROR
 
     report = build_gate_report(baseline["records"], candidate["records"])
     print(json.dumps(report.model_dump(mode="json"), indent=2))
@@ -120,14 +121,14 @@ async def _amain() -> int:
     quality = next((a for a in report.axes if a.name == "quality"), None)
     if quality is None or not quality.sub_metrics:
         print("FAIL: gate report missing quality.sub_metrics", file=sys.stderr)
-        return 2
+        return EXIT_ERROR
     if set(quality.sub_metrics) != expected_metrics:
         print(
             f"FAIL: quality.sub_metrics keys = {set(quality.sub_metrics)} "
             f"(want {expected_metrics})",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_ERROR
 
     if not is_mock:
         # Real-LLM mode: the candidate is deliberately weakened so we
@@ -135,7 +136,7 @@ async def _amain() -> int:
         worse = [n for n, sub in quality.sub_metrics.items() if sub.delta < 0]
         if not worse:
             print("WARN: candidate did not regress on any sub-metric", file=sys.stderr)
-    return 0
+    return EXIT_OK
 
 
 def main() -> None:

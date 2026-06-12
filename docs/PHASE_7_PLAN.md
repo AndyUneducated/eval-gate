@@ -47,7 +47,7 @@ Phase 5/6 的 `eval_results` 已经齐了所需信号列（score / judge_confide
 
 > **注（schema 更新）**：早期 Phase 7 设计依赖一个独立的 `safety_violation` 布尔列。Phase 10 之后 safety 信号统一收进 `axis_breakdown["safety"]`（4 个速率子项），`safety_violation` 列已由 migration 0011 删除。下文 outlier 策略与 `BadCase` 字段以当前实现为准。
 
-LLM 策略每次重跑也行（cheap model，调一次 ~$0），如果以后嫌慢，Phase 17 calibration 顺手加 `bad_case_labels` 缓存表。**Phase 7 MVP 不引入缓存表**——决策清晰度优先。
+LLM 策略每次重跑也行（cheap model，调一次 ~$0），如果以后嫌慢，Phase 16 calibration 顺手加 `bad_case_labels` 缓存表。**Phase 7 MVP 不引入缓存表**——决策清晰度优先。
 
 ## 核心 API：BadCaseFinder
 
@@ -174,9 +174,9 @@ OUTPUT:
 
 ## Forward-compat
 
-- Phase 14（κ 实验）：直接消费 promote 出来的 hard cases，跟人标对照
-- Phase 15（Adversarial Case Synth）：BadCaseFinder.find_llm() 的 prompt 可以替换成"生成更难的变体"，重用同一管线
-- Phase 17（Calibration）：补 `bad_case_labels` 缓存表，避免重复 LLM 调用
+- Phase 17（κ 实验）：直接消费 promote 出来的 hard cases，跟人标对照
+- Phase 14（Adversarial Case Synth）：BadCaseFinder.find_llm() 的 prompt 可以替换成"生成更难的变体"，重用同一管线
+- Phase 16（Calibration）：补 `bad_case_labels` 缓存表，避免重复 LLM 调用
 
 ---
 

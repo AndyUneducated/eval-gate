@@ -5,6 +5,11 @@
 
 **状态**：done（72/72 测试绿，lint/format clean；本地 Ollama qwen2.5:7b 端到端 demo 验证通过）
 
+> **后续更新（历史快照）**：本文写于 Phase 5 当时。下文若干模块名 / 路径已被后续 phase 重构，以**当前代码**为准：
+> - `RubricJudge` / `src/evalgate/judge/rubric_judge.py` → 拆成 `src/evalgate/judge/pointwise.py` + `pairwise.py`（Phase 6）。
+> - `src/evalgate/judge/runner.py` → `src/evalgate/evaluator/runner.py`（Phase 8 引入 EvaluatorRouter）。
+> - 默认本机模型 `qwen2.5:7b` → 仓库现统一用 `qwen3.5:9b` + `qwen3-embedding:8b`（Phase 12）。
+
 ---
 
 ## 一句话
@@ -104,7 +109,7 @@ judge:
 
 ```python
 async def iter_eval(session, *, eval_set_id, spec, run_id, mock=False) -> AsyncIterator[EvalRecord]:
-    """逐条产出 EvalRecord（直接落库 + yield）。Phase 16 Sequential Gate 直接消费。"""
+    """逐条产出 EvalRecord（直接落库 + yield）。Phase 15 Sequential Gate 直接消费。"""
 
 async def run_eval(session, *, eval_set_id, prompt_path, judge_model_override=None,
                    limit=None, mock=False) -> RunResult:
@@ -131,11 +136,11 @@ records 元素严格遵守 `EvalRecord` 模型（见 §5）：
 [src/evalgate/db/models.py](../src/evalgate/db/models.py) 加两表：
 
 - `EvalRunRow`：`id` / `eval_set_id`(FK eval_sets, CASCADE, indexed) / `prompt_path` / `prompt_hash` / `candidate_model` / `judge_model` / `total_cases` / `mean_score` (nullable) / `created_at`
-- `EvalResultRow`：`id` / `eval_run_id`(FK eval_runs, CASCADE, indexed) / `eval_case_id`(soft ref / nullable) / `tags`(JsonType) / `output`(JsonType, `{"text": ...}`) / `score` / `reason` / `cost_usd` / `latency_ms` / `safety_violation`（Phase 5 字段，已由 migration 0011 删除，safety 现走 `axis_breakdown["safety"]`）/ `judge_confidence`(float, nullable，**预留给 Phase 17**) / `judge_raw`(JsonType nullable，**预留给 Phase 17 重算 calibration**) / `created_at`
+- `EvalResultRow`：`id` / `eval_run_id`(FK eval_runs, CASCADE, indexed) / `eval_case_id`(soft ref / nullable) / `tags`(JsonType) / `output`(JsonType, `{"text": ...}`) / `score` / `reason` / `cost_usd` / `latency_ms` / `safety_violation`（Phase 5 字段，已由 migration 0011 删除，safety 现走 `axis_breakdown["safety"]`）/ `judge_confidence`(float, nullable，**预留给 Phase 16**) / `judge_raw`(JsonType nullable，**预留给 Phase 16 重算 calibration**) / `created_at`
 
 新建 [src/evalgate/db/migrations/versions/0004_create_eval_runs.py](../src/evalgate/db/migrations/versions/0004_create_eval_runs.py)：PG 用 JSONB；索引 `ix_eval_results_eval_run_id`、`ix_eval_runs_eval_set_id`。
 
-[src/evalgate/core/schemas.py](../src/evalgate/core/schemas.py) 新增 `EvalRecord` pydantic model，固化 gate JSON 的 record 形状（Phase 18 shadow `/v1/shadow/observe` 直接复用）。
+[src/evalgate/core/schemas.py](../src/evalgate/core/schemas.py) 新增 `EvalRecord` pydantic model，固化 gate JSON 的 record 形状（Phase 13 shadow `/v1/shadow/observe` 直接复用）。
 
 ## 6. Repository
 
@@ -203,18 +208,18 @@ litellm 通过 `mock_response="..."` 兜底，必要时 `monkeypatch` 直接打�
 ## 11. 风险点 / 范围控制
 
 - **litellm `completion_cost` 对 Ollama 返 None**：fallback 0.0，本地 demo cost 轴全 0 属预期；云模型或 Phase 6 token 估算再补。
-- **Ollama 7B judge 方差偏大**：功能验证够用；Phase 6/14 要对标论文方差时切 `ollama/qwen2.5:32b` 或云 judge。
+- **Ollama 7B judge 方差偏大**：功能验证够用；Phase 6/17 要对标论文方差时切 `ollama/qwen2.5:32b` 或云 judge。
 - **Judge 不出合法 JSON**：rubric 显式要求 STRICT JSON + `response_format`；regex 兜底 + 都失败 → `score=0.0` 不抛异常（单条 case 失败不能炸整 run）。
 - **串行慢**：100 case × 2s ≈ 3 min，可接受；并行留到 Phase 6。
 - **不做的事**：rerun / 增量 / 重试、judge 缓存、cost token 估算、record-replay cassette、`evalgate run show` CLI、UI、A/B Judge（Phase 6）、RAG/Agent 评测（Phase 8/9）。
 
-## 12. Forward-compat：给亮点 Phase 15–18 留接口
+## 12. Forward-compat：给亮点 Phase 13–16 留接口
 
 | For Phase | 现在做的事 | 收益 |
 |-----------|----------|------|
-| **16 Sequential Gate** | `iter_eval` 是 `AsyncIterator[EvalRecord]`，`run_eval` 是薄包装 | 后续 SequentialGate 直接消费 stream，runner 不重构 |
-| **17 Judge Calibration** | `EvalResultRow.judge_raw` 存全量 litellm response（含 usage / 模型版本） | Phase 17 重算 calibration 不用重跑 judge |
-| **17 Judge Calibration** | `EvalResultRow.judge_confidence: float \| None`（v1 写 None） | 避免 Phase 17 再发 migration |
-| **18 Shadow Mode** | `EvalRecord` 在 `core/schemas.py` 固化字段名 | Phase 18 `/v1/shadow/observe` payload 直接复用 |
+| **15 Sequential Gate** | `iter_eval` 是 `AsyncIterator[EvalRecord]`，`run_eval` 是薄包装 | 后续 SequentialGate 直接消费 stream，runner 不重构 |
+| **16 Judge Calibration** | `EvalResultRow.judge_raw` 存全量 litellm response（含 usage / 模型版本） | Phase 16 重算 calibration 不用重跑 judge |
+| **16 Judge Calibration** | `EvalResultRow.judge_confidence: float \| None`（v1 写 None） | 避免 Phase 16 再发 migration |
+| **13 Shadow Mode** | `EvalRecord` 在 `core/schemas.py` 固化字段名 | Phase 13 `/v1/shadow/observe` payload 直接复用 |
 
-Phase 15（Adversarial）走 eval_set 那条线，本期无 forward-compat 工作。
+Phase 14（Adversarial）走 eval_set 那条线，本期无 forward-compat 工作。

@@ -8,6 +8,83 @@
 
 ---
 
+## 2026-06-12 · 工程问题修复（gate 显著性统一 + smoke 治理）+ 真模型复验
+
+把上一条采集中暴露的 6 个工程问题（与模型能力无关）一次性修掉，原则是**设计整洁 / 面向后续 phase 可适配 > 向后兼容**，必要处直接重构。
+
+**Fix #1 — `latency_p95` 轴零容差假阳性（核心）。** 根因是 `multi_axis.py` 把 mean 轴和 p95 轴分叉处理：mean 走 bootstrap CI、p95 只 `regressed = delta > 0`（无显著性、无阈值）。重构成**所有数值轴走同一条判定**：把 `significance.bootstrap_diff_ci` 泛化成可插拔统计量（`STATISTICS = {"mean", "p95"}`，统计量沿 resample 矩阵 `axis=1` 归约，点估计也用同一统计量），`AxisSpec` 新增 `rel_tolerance`，回归判定收敛到一个 `_is_regression(显著 ∧ 坏方向 ∧ |delta| ≥ rel_tolerance·|baseline|)`。latency 轴给 10% 相对容差；mean 轴 `rel_tolerance=0` → 行为与旧版逐位一致（quality/cost 测试零改动）。后续 phase 加新轴只需声明 `aggregator + direction + rel_tolerance`，显著性自动统一。
+
+**Fix #3 — phase7/phase9 写死 `mock=True`。** 新建 `scripts/_smoke.py` 作为唯一真相源：`mock_from_env()`（修了旧的字符串真值 bug —— `EVALGATE_MOCK_LLM=0` 以前被当成 mock）、退出码常量、`import` 即开启行缓冲。phase7/phase9 改成把 `mock` 一路透传给 `run_eval`/`finder.find`。phase9 的「中间步错误被最终答案掩盖」确定性断言**只在 mock 成立**（真模型轨迹不确定），真模式降级为连通性断言（planner 真打了 LLM、轨迹子轴齐全）。
+
+**Fix #2 — 真 smoke 零 CI 覆盖致静默腐烂。** 新增 `tests/test_smokes.py`：以 `EVALGATE_MOCK_LLM=1` 子进程跑全部 8 条 smoke 并断言退出 0。这正是当初 phase10 断言被 0011 改坏却躺了 12 天没人发现的根因——现在 mock 下每条 smoke 的断言都进 CI。
+
+**Fix #4 — 退出码语义不统一 + phase5/6/7 无断言。** 统一为 `EXIT_OK=0 / EXIT_FAILED=1（该抓的回归没抓到）/ EXIT_ERROR=2（连通性/管线错误）`；phase12 作为 gate 本身保留「退出码即裁决」语义（1=回归，设计内）。补上断言：phase5 连通性（两边各跑满 3 case + gate 干净退出）、phase7 BadCaseFinder 真的 promote 了 case。phase6 起初写成硬断言「多裁判 stdev ≤ 单 pointwise stdev」，真跑两次 N=3 结果**翻转**（一次 multi 更低、一次更高）当场暴露这是 Fix #5 的小 N 低功效问题——遂改为**结构断言（两 config 都产出完整打分矩阵）+ 信息性报告**（multi>single 时打 underpowered NOTE 不失败），方差缩减的正式结论留给 Phase 17 足量 N + seed 的复现实验。
+
+**Fix #6 — 可观测性/卫生。** `_smoke` 导入即把 stdout/stderr 切行缓冲（修日志里 stderr「FAIL」排到缓冲 stdout 前面的误导）；所有 scratch（`.dbroot`/`runs`）移到系统临时目录并 `finally` 清理，`.gitignore` 加防御条目。
+
+（Fix #5「demo N 太小、bootstrap 判不出显著」是数据体量问题，按计划留给 Phase 17 的正式复现实验，不在本轮塞大数据集拖慢真跑。）
+
+**真模型复验**（本机 Ollama，`EVALGATE_MOCK_LLM=0`）：全量 mock 测试绿（新增 test_smokes 8 条 + bootstrap p95 3 条）。真跑逐一确认修复正确且未伤质量：
+
+| Phase | 模式 | 退出码 | 关键复验点 |
+|---|---|---|---|
+| 13 Shadow | 离线 | 0 | cost 注入 regress 仍触发报警（未受影响）|
+| 5 Judge Runner | 真模型 | 0 | `mode=real` 打印确认 env 真值修复生效；57s |
+| 7 BadCase Finder | **真模型** | 0 | 写死 mock 已修，真模型下 promote 成功；153s |
+| 10 Safety | 真模型 | 0(*) | **latency +292ms(+4.4%) 现 `passed=True`（旧逻辑必假阳）**；safety 子轴仍正确 regress → 轴 fail；131s |
+| 8 RAG | 真模型 | 0 | latency **+14903ms(+429%) 真回归仍 `passed=False`（显著）**；897s |
+| 9 Agent | **真模型** | 0 | 写死 mock 已修，「planner 对真模型验证」首次达成；45s |
+| 12 CI Gate | 真模型 | 1 | gate 设计内 FAIL（quality 子轴 `faithfulness -0.25`）；latency **-2425ms（变快）正确 `passed=True`** 不误报；126s |
+| 6 Judge Robustness | 真模型 | 0 | N=3：single 0.0883 vs multi 0.0679（claim holds）；1546s。**但两次 N=3 跑结果会翻转**（另一次 single 0.0519 vs multi 0.0601）——印证小 N 方差比较本就噪声大，所以这条不做硬断言，只报告 |
+
+**最有说服力的一条**：Fix #1 在真数据上同时通过两个反向用例——phase10 的 +4.4% latency 噪声被容差吸收（旧代码 `delta>0` 必然假阳），而 phase8 的 +429% 真回归与 phase12 的变快都被正确判定。噪声不再拖垮 gate，真回归照抓。
+(*) phase10 退出码取决于 safety 子轴回归（与 latency 无关），本轮为 0。
+
+## 2026-06-12 · 全量真模型数据采集 + 文档收尾
+
+Phase 12/13 落地后第一次**系统性跑各 phase smoke 并采集数据**（本机 Ollama：候选/裁判 `qwen3.5:9b`、跨家族大裁判 `qwen3.6:27b`、检索/RAGAS 嵌入 `qwen3-embedding:8b`）。全量 mock 测试 **322/322 绿**。**实测中发现 phase7 / phase9 smoke 把 `mock=True` 写死，无视 `EVALGATE_MOCK_LLM`**——所以这两条本轮跑的其实是 mock（详见下方「工程问题」）。真正命中真模型的是 **5 / 6 / 8 / 10 / 12**：
+
+| Phase | 实测 | 模式 | 退出码 |
+|---|---|---|---|
+| 5 Judge Runner | billing 3 case，baseline 0.85 → candidate 0.80（弱化 prompt 真信号）；55s | 真模型 | 0 |
+| 6 Judge Robustness | **变异度 N=5**：单 pointwise 每-case 分数 stdev **0.0853** vs 多裁判(9B+27B)+position-swap+K3 **0.0503**（**↓41%**）；2436s（27B 溢出到 CPU 是长尾） | 真模型 | 0 |
+| 7 BadCase Finder | 10 case → uncertainty 取 top-3 → promote 落 target set；5s | **mock（脚本硬编码）** | 0（脚本无断言，恒 0） |
+| 8 RAG (RAGAS) | 真嵌入+真裁判：faithfulness 0.867 → 0.727、answer_relevance 0.927 → 0.913、context_precision 1.0；869s | 真模型 | 0 |
+| 9 Agent Trajectory | tool_call_accuracy 0.83 → 0.33、quality 0.75 → 0.33（**mock planner 的确定性轨迹比对，非真模型信号**）；4s | **mock（脚本硬编码）** | 0 |
+| 10 Safety | 真模型**拒绝了越狱**（`jailbreak_compliance_rate=0`，mock 看不到的真行为）；`pii_input_rate +0.417`、`jailbreak_attempt_rate +0.333`、`pii_output_leak_rate +0.417` 三项显著 regress，safety 轴 `passed=False`；128s | 真模型 | 见下 |
+| 12 CI Gate (real) | 削弱 candidate 触发 `quality` 轴 fail，归因 `answer_relevance` delta=-0.079（显著）+ 最差 tag `rag`；**124.5s**（两轮 8 次评测） | 真模型 | 1（设计内：gate 故意 FAIL） |
+
+**本轮暴露的工程问题（与模型能力无关，按优先级）**：
+
+1. **`latency_p95` 轴零容差 → 假阳性 gate fail。** `multi_axis.py` 对 p95 轴是 `regressed = delta > 0`：无阈值、无显著性/CI（quality/cost/safety 都走 bootstrap CI），p95 哪怕 +1ms 也判回归（docstring 写「threshold delta」但代码里根本没有阈值）。真模型本地推理延迟抖动大，于是 **phase8 的 gate `passed=False` 完全是被 latency 噪声拖的**（payments tag）、phase10 也报了 latency +305ms。修法：给 p95 加相对容差 + 方差/CI 判显著。
+2. **真模型 smoke 全程无自动化覆盖 → 静默腐烂。** CI 只跑 ruff+pytest（mock）+ phase12 smoke（mock）；phase5/6/7/8/9/10/13 的 smoke 哪里都不自动跑。后果就是下面这个被 0011 改坏的断言躺了 ~12 天没人发现。
+3. **phase7 / phase9 smoke 写死 `mock=True`，无视 `EVALGATE_MOCK_LLM`。** phase7 更严重——它自己的 usage docstring 明说「`EVALGATE_MOCK_LLM=0` + 真模型可跑真的」，但代码 `mock=True`（契约与实现矛盾）；phase9 干脆没有真模型路径，**Agent planner 这条唯一吃 LLM 的 agent 路径从未对真模型验证过**。
+4. **smoke 退出码约定不统一，把「预期失败」和「真错误」混为一谈。** phase8/9/10/13 用 `2=断言失败 / 0=ok`；phase12 用 `1=gate fail`（而 gate fail 恰是真模型 demo 想要的结果）；phase5/6/7 只有 0（phase7 干脆无任何断言，永远 0 → 抓不到回归）。批量跑时无法机械区分好坏退出。
+5. **demo eval set 太小（N=3–5），bootstrap CI 几乎判不出显著。** 真回归被淹没：phase9 quality delta −0.42 但 CI [−0.83,+0.08] 判「不显著」；phase12 quality 主轴 delta 还 +0.24（candidate 聚合分更高）只靠子项才 fail。N 这么小时主轴结论基本靠运气。
+6. **可观测性/卫生（低优）**：smoke 用块缓冲 stdout，重定向到文件时 stderr 的「FAIL…」会排在缓冲 stdout 之前（phase10 日志里 FAIL 居然在报告上方，误导排查）——应 `python -u` / `flush=True` / 用 logging。另：`.phase5-runs/` `.phase6-runs/` `.phase6-variance.db` 等 scratch 既没进 `.gitignore`、phase6 也不清理，易误提交。
+
+（明确**不算**工程问题：27B 溢出 CPU 致 phase6 跑 40min、模型拒绝越狱、faithfulness 跌幅、噪声本身——这些是硬件/模型层。但 gate 对噪声的处理方式即第 1 条，是工程问题。）
+
+**已就地修掉的 1 个**（被 migration 0011 弄过期的断言）：`scripts/phase10_safety_smoke.py` 仍在断言 `safety.delta > 0`，但 0011 之后 safety 主轴已无独立标量（`multi_axis.py` 把 safety 主轴恒置 `delta=0.0`，`passed = not sub_regressed`，信号全在 4 个 rate 子轴）。所以该 smoke 在 mock / real 下都会误退出码 2（gate 报告本身完全正确）。改成断言「至少一个 safety 子轴显著 regress 且主轴 `passed=False`」，mock 重跑退出码 0、lint/format 绿。这正是上面第 2、第 3 条共同造成的尾巴。
+
+**一个真模型 vs mock 的关键差异（值得记）**：mock 裁判恒定打分、模型必然"顺从"，看不到安全行为的真信号；真模型在 jailbreak 输入下会**主动拒绝**，于是 `jailbreak_compliance_rate` 真实地保持 0，而 gate 仍能靠输入侧的 `pii_input_rate` / `jailbreak_attempt_rate` 子轴抓到回归——印证了「把 safety 拆成输入/输出 4 个子轴」而不是单一布尔的设计价值。
+
+**文档收尾**：对全仓文档做了一轮过期/重复审计并修正——README 状态行 `Phase 0–12 → 0–13` + 补 Shadow Mode/`SHADOW.md` 指引、UI「三个页面 → 四个页面」（补 Generate Trace）、`make shadow-smoke`；ROADMAP 进度图补 P13、总体节奏/推荐路线/执行守则改为「核心 0–12 + 亮点 13 已完成，下一步 14」、Phase 13 交付描述对齐真实实现（`shadow(case_input, primary=…, candidate=…)` / 按 `candidate_prompt_hash` 聚合 / on-demand rollup 非每小时）、Phase 14 迁移号 `0006 → 0013+`；给历史 plan（P5/P6/P11）加「历史快照」横幅标注已重构的死链路径（`judge/runner.py → evaluator/runner.py`、`rubric_judge.py → pointwise/pairwise`、`eval_run/repository.py → judge.persistence`），P10 把误归类到 Phase 13 的「流式 safety」更正为未排期。
+
+**给 Phase 17 的料**：上面这批真数字（尤其 Phase 6 的 0.0853 vs 0.0503 变异度对比、Phase 12 的 124.5s / answer_relevance 归因）可直接作为复现实验底稿；design.md 第 4 节简历 bullet 的 `±15%→±3%` 仍按计划留到 Phase 17 用一组正式可复现实验回填。
+
+## 2026-06-11 · Phase 13 · Shadow Mode（线上流量上做无害评测）
+
+第一个**亮点 phase**。把"评测"从 PR 时刻推到**生产流量**：应用用 `await shadow(case_input, primary=…, candidate=…, sample_rate=0.1)` 包一层主调用，primary 正常返回用户，命中采样的请求**后台**并发跑 candidate（输出不返用户），用同一套 judge 给两边打分，把 `(primary, candidate)` 两条 `EvalRecord` fire-and-forget 推回 `POST /v1/shadow/observe`。滚动窗口按 `candidate_prompt_hash` 聚合，**直接复用 `build_gate_report`**（primary=baseline / candidate=candidate）出同一套四轴 + bootstrap CI + tag 归因 + `axis_breakdown` 子轴——shadow 和 PR CI 共用一份 gate 定义，零新统计代码。这是整条流水线"记录契约 = `EvalRecord`"早期投资的回报：observe 的 payload 就是它，gate 原样消费。
+
+**两个刻意的设计取舍**：(1) **SDK 侧打分**而非后端打分——shadow 没有人工 ground truth，两边都要一个 reference-free judge 分才能成 record；放 SDK 侧复用 `build_judge_stack(primary)`（同 rubric 才公平），后端就退成纯写 + 聚合的薄层。(2) **on-demand + 显式 rollup** 而非内置 scheduler——`GET /v1/shadow/reports` 实时算、`POST /v1/shadow/rollup`（含 `evalgate shadow rollup` CLI）才落 `shadow_reports` 快照并报警，生产用 cron 调即可，本仓库不背一个定时器依赖。
+
+**"绝不阻塞主路径"是硬约束**：采样命中 `asyncio.create_task` 起后台任务，调用方永不 await；推送 `ShadowClient` 1s 硬超时 + 双层 try 吞掉一切异常。一个真实的 asyncio 坑：后台 task 必须存进模块级 `_BACKGROUND_TASKS` 强引用（loop 只持弱引用，否则可能 mid-flight 被 GC），顺手给了 `drain_background_tasks()` 供测试/优雅关停排空。报警是 greenfield：POST 一个 `{"text"}`（Slack incoming-webhook 形状，通用 receiver 也吃），无 `EVALGATE_SHADOW_WEBHOOK_URL` 时降级 structlog warning，CI/本地零外部依赖。
+
+**实测数字**：`make shadow-smoke` 离线（无 LLM、无 HTTP）灌 1000 条 observation、candidate cost 注入 +20%，滚动 report 四轴齐全，`cost` 轴 `delta=+0.0004` 显著 → `passed=False` → 报警触发、`alerted=True`，quality/latency/safety 保持 within tolerance。新增 20 个测试（persistence / rollup / endpoint / SDK 采样+fire-and-forget / alert），全量 342/342 + lint/format 绿；0012 migration 在本机 Postgres 上 up/down/up 验证通过（unit 测试照例走 aiosqlite，迁移由 PG 验）。
+
+**关键技术语言**：online shadow evaluation · production-traffic A/B · fire-and-forget async with hard timeout · SDK-side reference-free scoring · rolling gate reuse（PR 与生产共用一套 4 轴）· unknown-unknown detection。
+
 ## 2026-06-11 · Phase 12 · 真实 CI Gate 端到端（替换 fixtures）
 
 把 `eval-gate` workflow 从"seed 假 fixtures → `evalgate gate`"换成一条真 judge 流水线：seed 一个混合 reference set → 用 baseline prompt 跑一遍 judge → 用 candidate prompt 跑一遍 → diff 出四维报告。关键洞察是**一份 prompt YAML 能覆盖全部任务等价类**——`build_router` 按 YAML 里有没有 `retriever`/`rag_evaluator`/`agent_runtime` 块自动注册 generic / rag / agent evaluator，`safety` 块对所有 case 追加安全子轴。所以新建的 [`examples/ci_demo`](examples/ci_demo) 只用一个集（2 generic 含 PII+jailbreak / 1 rag / 1 agent，input 统一 `question` 键）+ 两份只差 `candidate.system` 的 committed prompt，单次 `run` 就把四条 evaluator 分支 + safety pipeline 全趟一遍。整条编排落在 [`scripts/phase12_ci_gate.py`](scripts/phase12_ci_gate.py)，CI 这步几乎是接线而非写新算法。
@@ -16,7 +93,7 @@
 
 **DB 用 SQLite ephemeral**（`Base.metadata.create_all`，不跑 alembic），沿用各 phase smoke 脚本的套路，CI 不必起 Postgres service，本机/CI 行为一致。
 
-**实测数字**：`make ci-gate` mock 端到端 ~6s 绿；`make ci-gate-real`（本机 Ollama，qwen3.5:9b 候选+裁判 / qwen3-embedding:8b 检索+ragas）一次 baseline+candidate 两轮共 8 次评测 **~140s**（远低于 5min 预算），削弱版 candidate 触发 `quality` 轴 fail，summary 点名 `answer_relevance` 子项 delta=-0.127 + 最差 tag `rag`——正是 Phase 14 录屏要的"改差 prompt → CI 红 + 归因到位"画面。
+**实测数字**：`make ci-gate` mock 端到端 ~6s 绿；`make ci-gate-real`（本机 Ollama，qwen3.5:9b 候选+裁判 / qwen3-embedding:8b 检索+ragas）一次 baseline+candidate 两轮共 8 次评测 **~140s**（远低于 5min 预算），削弱版 candidate 触发 `quality` 轴 fail，summary 点名 `answer_relevance` 子项 delta=-0.127 + 最差 tag `rag`——正是 Phase 17 录屏要的"改差 prompt → CI 红 + 归因到位"画面。
 
 **一个 surprise（值得记）**：实现时我一度把 example/test 里的 `ollama/qwen3.5:9b` 当成"不存在的占位 tag"想换成 `qwen2.5:7b`，还顺手翻转了 [`tests/test_no_legacy_models.py`](tests/test_no_legacy_models.py) 这个守卫。跑真实验证时 `ollama list` 才发现本机装的恰恰是 `qwen3.5:9b` / `qwen3.6:27b` / `qwen3-embedding:8b`（自定义本地 tag），仓库约定和守卫一直是对的。全部回滚，只保留 Phase 12 真正的新增物，ci_demo 用本机已装的 `qwen3.5:9b` + `qwen3-embedding:8b`。教训：改"看起来是死配置"的东西前，先核对运行环境的事实（`ollama list`）。
 
@@ -124,7 +201,7 @@ Phase 9 把 task-aware evaluator 从“RAG + generic”补全到 agent：不再�
 主要工程：
 
 - **新抽象层 `evaluator/`**：`Evaluator` Protocol + `EvaluationOutcome` dataclass 是 router 和具体 evaluator 之间唯一的货币（包括 score / sub_metrics / confidence / output_text / retrieved_contexts / cost / latency / raw_calls / error）。`build_router(spec, mock=...)` 永远注册 `generic`（包旧 MultiJudge 路径），看到 prompt YAML 里有 `retriever:` + `rag_evaluator:` 才注册 `rag`；`agent` 留给 Phase 9 一行注册即可。
-- **真 ragas + LiteLLM adapter**：用户明确选 A 路径——保留 RAGAS 品牌而不是自己重写 prompts。`ragas_adapter.py` 写一个 `LiteLLMChatModel(BaseChatModel)` + `LiteLLMEmbeddings(Embeddings)` shim 让 ragas 的 langchain 调用全部走我们已有的 `litellm.acompletion` / `aembedding`。`mock_text` / `mock_mode` 短路给单测和 CI 用，hash 384-dim 伪向量保证不连 Ollama 也能跑。一个 `_RagasScorer` 把 `ragas.evaluate(Dataset.from_dict(row), metrics=[...])` 包成 async（`run_in_executor`），结果转 `JudgeCallRecord(judge_model="ragas:<metric>")` 落 `eval_judge_calls`，Phase 17 calibration 直接复用。
+- **真 ragas + LiteLLM adapter**：用户明确选 A 路径——保留 RAGAS 品牌而不是自己重写 prompts。`ragas_adapter.py` 写一个 `LiteLLMChatModel(BaseChatModel)` + `LiteLLMEmbeddings(Embeddings)` shim 让 ragas 的 langchain 调用全部走我们已有的 `litellm.acompletion` / `aembedding`。`mock_text` / `mock_mode` 短路给单测和 CI 用，hash 384-dim 伪向量保证不连 Ollama 也能跑。一个 `_RagasScorer` 把 `ragas.evaluate(Dataset.from_dict(row), metrics=[...])` 包成 async（`run_in_executor`），结果转 `JudgeCallRecord(judge_model="ragas:<metric>")` 落 `eval_judge_calls`，Phase 16 calibration 直接复用。
 - **Retriever 在 candidate 端（动态）**：用户选 B 路径——eval_case 上的 `retrieved_contexts` 是金标 reference（`context_precision_with_reference` 用），运行时让 candidate 自己查。`EmbeddingRetriever` 第一次 retrieve 触发 lazy 全 corpus embed（`asyncio.Lock` 防并发重复 embed），后续余弦排序取 top_k；候选 generator 用 `{contexts}` 渲染 user_template。
 - **Schema（migration 0008）**：`eval_cases.retrieved_contexts: list[str]` NOT NULL default `[]`；`eval_results.sub_metrics: dict[str,float] | None`；`eval_results.retrieved_contexts: list[str] | None`（运行时实际检索结果，badcase 审计）。SQLite 走 `batch_alter_table` 加列。
 - **Gate 显示分项**：`AxisMetric.sub_metrics: dict[str, "AxisMetric"] | None` 递归字段；`build_axis_metrics` 自动从 records 的 `sub_metrics` 派生 nested mean axes（每项 bootstrap CI）。**`quality.passed = passed AND all(sub.passed)`**——这点关键：candidate 把 faithfulness 拉到 0 但用 verbosity 把 answer_relevance 拉满，平均 score 不变也能 fail。`_summarize` 直接列出哪些 sub-metric 显著回归。
@@ -206,7 +283,7 @@ Phase 9 把 task-aware evaluator 从“RAG + generic”补全到 agent：不再�
 
 几个值得记的设计取舍：
 
-1. **不加新表**：Phase 7 全是 SELECT，LLM 标签也不缓存。决策清晰度 > 性能微优化；Phase 17 calibration 真要复用 LLM 标签再加 `bad_case_labels`。
+1. **不加新表**：Phase 7 全是 SELECT，LLM 标签也不缓存。决策清晰度 > 性能微优化；Phase 16 calibration 真要复用 LLM 标签再加 `bad_case_labels`。
 2. **Promote 走"复制 EvalCaseRow"而不是"多对多挂"**：`EvalCaseRow.eval_set_id` 保持 N:1，避免新建 join 表 + 改写 Phase 4 一堆 list/filter；source set 的快照不被污染。Lineage 通过 tags 弱耦合（`badcase:source-case:<id>` + `badcase:strategy:<s>`），跟 Phase 4 `source_trace_id` 的"软引用"哲学一致。
 3. **同 set promote 显式拒绝（`SameSetPromotionError` → HTTP 409）**：防呆——同 set 复制是 no-op anti-pattern，硬报错胜过 silently 创建重复数据。
 4. **`p95` 数据稀疏防呆（`MIN_FOR_PERCENTILE=4`）**：少于 4 行时跳 percentile 判定，只看 `score=0 / safety`。p95 在 n=3 上没统计意义，强行算反而把 outlier 标准化掉。
@@ -239,11 +316,11 @@ Phase 5 是 1 judge × 1 次 × 1 角度。Phase 6 把它升级成「N judge × 
 
 1. **`prompt.yaml` 改 `judges: [...] + judge_policy:`**：删 Phase 5 的单数 `judge:`，loader 直接 `ValidationError` 报错并给迁移示例。一刀切，把"两种 schema 同时存在"的二次复杂度消灭掉。
 2. **拆 `RubricJudge` 为 `PointwiseJudge` + `PairwiseJudge`**：原文件删；共享 litellm 壳 + 解析层抽到 [protocol.py](src/evalgate/judge/protocol.py)。pairwise 不输出 0..1 score（只出 winner: A|B|tie），0/0.5/1 由 `PositionSwapJudge` 聚合 — 把"绝对分"和"相对偏好"两种语义彻底隔离。
-3. **`eval_judge_calls` 一行一次原始调用**：N×K×P 行/case 全落库，Phase 14 算 κ、Phase 17 算 ECE 直接 SQL，不再回放 judge。`eval_results.judge_confidence` 真填了，gate / BadCase 现在可用。
+3. **`eval_judge_calls` 一行一次原始调用**：N×K×P 行/case 全落库，Phase 17 算 κ、Phase 16 算 ECE 直接 SQL，不再回放 judge。`eval_results.judge_confidence` 真填了，gate / BadCase 现在可用。
 4. **`case.expected` 在 pairwise 模式下硬必需**：缺失 → emit `error=True, error_kind="missing_reference"` 的 EvalRecord，**不静默 fallback 到 pointwise**。失败显式可见，胜过埋雷。
 5. **Confidence 公式两层乘**：`per_judge_conf = 1 - std/0.5`（self-consistency 内部稳定度）× `cross_term = 1 - cross_std/0.5`（judge 间一致度）。两层都满 → 1.0；任一层崩 → 接近 0.0。最大 std=0.5 来自分数 ∈[0,1] 的几何上界，让 confidence ∈[0,1] 直接可解释。
 
-栈的拓扑：`Runner → MultiJudge(N) → SelfConsistencyJudge(K) → PositionSwapJudge(P) → PointwiseJudge | PairwiseJudge`，单 case 内 `N×K×P` 次走 `asyncio.gather + Semaphore(concurrency)`，跨 case 仍然顺序（保留 Phase 16 stream）。Temperature 自动 bump：K>1 且用户没设 → 强制 ≥0.7（K=1 不动），否则 greedy decoding 让方差信号塌成 0，confidence 公式失效。
+栈的拓扑：`Runner → MultiJudge(N) → SelfConsistencyJudge(K) → PositionSwapJudge(P) → PointwiseJudge | PairwiseJudge`，单 case 内 `N×K×P` 次走 `asyncio.gather + Semaphore(concurrency)`，跨 case 仍然顺序（保留 Phase 15 stream）。Temperature 自动 bump：K>1 且用户没设 → 强制 ≥0.7（K=1 不动），否则 greedy decoding 让方差信号塌成 0，confidence 公式失效。
 
 **Tech**: Pydantic v2 `model_validator(mode="before")` 拦截 legacy 字段、`statistics.pstdev` 做总体方差、`asyncio.Semaphore` 限速、`response_format={"type":"json_object"}` 提示 JSON 输出、SQLAlchemy ORM + JSONB on PG / JSON fallback on SQLite。
 
@@ -259,9 +336,9 @@ Phase 5 是 1 judge × 1 次 × 1 角度。Phase 6 把它升级成「N judge × 
 几个值得记的设计取舍：
 
 1. **Rubric 放进 `prompt.yaml`，不进 eval_set**：评分标准跟候选 prompt 一起在 git 里 diff，避免在 DB 里维护"通用 rubric"的复杂度。
-2. **Runner 写成 `iter_eval` 流式 + `run_eval` 薄包装**：Phase 16 Sequential Gate 直接消费 stream 做 early-stop，无需重构。
-3. **`EvalResultRow` 预留 `judge_confidence` + `judge_raw`**：Phase 17 Calibration 重算 ECE 不需要重跑 judge、不需要再发 migration。
-4. **`EvalRecord` 落到 `core/schemas.py` 当固化契约**：Phase 18 Shadow Mode 的 `/v1/shadow/observe` 直接 import 复用，不会出现字段名漂移。
+2. **Runner 写成 `iter_eval` 流式 + `run_eval` 薄包装**：Phase 15 Sequential Gate 直接消费 stream 做 early-stop，无需重构。
+3. **`EvalResultRow` 预留 `judge_confidence` + `judge_raw`**：Phase 16 Calibration 重算 ECE 不需要重跑 judge、不需要再发 migration。
+4. **`EvalRecord` 落到 `core/schemas.py` 当固化契约**：Phase 13 Shadow Mode 的 `/v1/shadow/observe` 直接 import 复用，不会出现字段名漂移。
 5. **CLI 加 `--mock` + `EVALGATE_MOCK_LLM=1` 环境变量**：CI / pytest 走 mock 不烧外部 API；本地默认真调 Ollama。`litellm.completion_cost` 对 `ollama/*` 没定价会 raise，wrapper fallback 0.0 不炸。
 6. **Judge 解析三层兜底**：`json.loads` → regex `r'score\s*(?:[:=]|\bis\b)\s*([0-9.]+)'` → 全失败给 score=0 + reason 存原文。**绝不向上抛**，一条 case 失败不污染整个 run。
 

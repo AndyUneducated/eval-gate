@@ -2,7 +2,7 @@
 
 The Phase 6 forward-compat promise is: every raw judge LLM invocation that
 contributed to an EvalResultRow lands as its own row in `eval_judge_calls`,
-so Phase 14 (kappa) and Phase 17 (calibration) can recompute things without
+so Phase 17 (kappa) and Phase 16 (calibration) can recompute things without
 re-invoking the judge.
 """
 

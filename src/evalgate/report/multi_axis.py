@@ -1,7 +1,11 @@
 """Build the CI gate report (quality / cost / latency_p95 / safety).
 
-Mean-aggregated axes use bootstrap CI; p95 uses a simple threshold delta.
-Safety is breakdown-only: no mean scalar — ``passed = all(sub_metrics.passed)``.
+Every numeric axis is judged by the *same* machinery: a bootstrap CI on its
+aggregate statistic (mean for quality/cost, p95 for latency) plus an optional
+per-axis relative-tolerance band. A regression requires the delta to be (a) in
+the bad direction, (b) statistically significant, and (c) larger than the axis'
+tolerance band — so noisy tail latency no longer trips the gate on a sub-percent
+wobble. Safety is breakdown-only: no scalar — ``passed = all(sub_metrics.passed)``.
 """
 
 from __future__ import annotations
@@ -23,6 +27,11 @@ EvalRecord = dict[str, Any]
 SAFETY_AXIS = "safety"
 SAFETY_DIRECTION: Direction = "lower_is_better"
 
+# p95 latency on real local inference wobbles run-to-run; require a candidate
+# regression to exceed this fraction of the baseline p95 (and be significant)
+# before it fails the gate.
+LATENCY_REL_TOLERANCE = 0.10
+
 
 @dataclass(frozen=True)
 class AxisSpec:
@@ -30,6 +39,9 @@ class AxisSpec:
     direction: Direction
     extractor: Callable[[EvalRecord], float]
     aggregator: Aggregator
+    # Minimum |delta| as a fraction of the baseline aggregate before a
+    # (significant, bad-direction) change counts as a regression. 0 = no band.
+    rel_tolerance: float = 0.0
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -58,6 +70,7 @@ AXES: tuple[AxisSpec, ...] = (
         direction="lower_is_better",
         extractor=lambda r: float(r.get("latency_ms", 0.0)),
         aggregator="p95",
+        rel_tolerance=LATENCY_REL_TOLERANCE,
     ),
 )
 
@@ -68,6 +81,25 @@ _SUB_AXIS_PARENTS: dict[str, Direction] = {
 
 def _aggregate(spec: AxisSpec, values: Sequence[float]) -> float:
     return _mean(values) if spec.aggregator == "mean" else _p95(values)
+
+
+def _is_regression(
+    *,
+    direction: Direction,
+    delta: float,
+    baseline_agg: float,
+    significant: bool,
+    rel_tolerance: float,
+) -> bool:
+    """A regression = significant + bad-direction + outside the tolerance band."""
+    if not significant:
+        return False
+    bad_direction = delta < 0 if direction == "higher_is_better" else delta > 0
+    if not bad_direction:
+        return False
+    if rel_tolerance > 0.0:
+        return abs(delta) >= rel_tolerance * abs(baseline_agg)
+    return True
 
 
 def build_axis_metrics(
@@ -82,19 +114,18 @@ def build_axis_metrics(
         c_agg = _aggregate(spec, c_vals)
         delta = c_agg - b_agg
 
-        if spec.aggregator == "mean" and b_vals and c_vals:
-            boot = bootstrap_diff_ci(b_vals, c_vals)
+        if b_vals and c_vals:
+            boot = bootstrap_diff_ci(b_vals, c_vals, statistic=spec.aggregator)
             ci_low = boot.ci_low
             ci_high = boot.ci_high
             significant = boot.significant
-            if spec.direction == "higher_is_better":
-                regressed = significant and delta < 0
-            else:
-                regressed = significant and delta > 0
-        elif spec.aggregator == "p95" and b_vals and c_vals:
-            ci_low = ci_high = None
-            significant = False
-            regressed = delta < 0 if spec.direction == "higher_is_better" else delta > 0
+            regressed = _is_regression(
+                direction=spec.direction,
+                delta=delta,
+                baseline_agg=b_agg,
+                significant=significant,
+                rel_tolerance=spec.rel_tolerance,
+            )
         else:
             ci_low = ci_high = None
             significant = False

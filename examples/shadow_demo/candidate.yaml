@@ -1,0 +1,24 @@
+name: support-candidate
+candidate:
+  # A deliberately weakened + costlier variant: terse, ungrounded persona, and
+  # a larger/pricier model so the rolling shadow report can surface a cost
+  # regression on production traffic the PR eval set never exercised.
+  model: ollama/qwen3.5:9b
+  system: "Answer in one short sentence."
+  user_template: "{question}"
+  params:
+    temperature: 0.7
+judges:
+  - model: ollama/qwen3.5:9b
+    rubric: |
+      Score from 0.0 to 1.0 how helpful, correct, and grounded the OUTPUT is
+      for the INPUT. Return strict JSON: {"score": <0..1>, "reason": "<short>"}.
+    params:
+      temperature: 0.0
+judge_policy:
+  mode: pointwise
+  k: 1
+  position_swap: false
+  concurrency: 4
+safety:
+  enabled: false

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from evalgate import __version__
-from evalgate.api.routers import badcase, dev, eval_sets, evals, otlp, traces
+from evalgate.api.routers import badcase, dev, eval_sets, evals, otlp, shadow, traces
 from evalgate.core.config import get_settings
 from evalgate.core.logging import configure_logging, get_logger
 
@@ -40,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(eval_sets.router, prefix="/v1", tags=["eval-sets"])
     app.include_router(evals.router, prefix="/v1", tags=["evals", "runs"])
     app.include_router(badcase.router, prefix="/v1", tags=["badcase"])
+    app.include_router(shadow.router, prefix="/v1", tags=["shadow"])
     app.include_router(dev.router, prefix="/v1", tags=["dev"])
     return app
 

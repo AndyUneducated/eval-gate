@@ -115,7 +115,7 @@ class JudgeScore(BaseModel):
 class EvalRecord(BaseModel):
     """Per-case record produced by `evalgate run` and consumed by `evalgate gate`.
 
-    Field names are part of the public contract — Phase 18 shadow-mode
+    Field names are part of the public contract — Phase 13 shadow-mode
     `POST /v1/shadow/observe` also consumes this shape, and the gate's
     `multi_axis.AXES` extractors read these keys directly.
     """
@@ -160,6 +160,40 @@ class GateReport(BaseModel):
     axes: list[AxisMetric]
     attribution: dict[str, dict[str, float]] = Field(default_factory=dict)
     summary: str | None = None
+
+
+class ShadowObserveRequest(BaseModel):
+    """Phase 13: one shadow observation pushed by the client SDK.
+
+    ``primary`` is the response that was actually served to the user;
+    ``candidate`` is the shadow run that was discarded. Both are full
+    :class:`EvalRecord`s already scored client-side (SDK-side scoring), so
+    the backend stays a thin write + aggregate layer. Observations are
+    grouped by ``candidate_prompt_hash`` for the rolling report.
+    """
+
+    case_id: str
+    tags: list[str] = Field(default_factory=list)
+    primary_prompt_hash: str
+    candidate_prompt_hash: str
+    primary: EvalRecord
+    candidate: EvalRecord
+
+
+class ShadowReportOut(BaseModel):
+    """Phase 13: a rolling shadow gate report over a time window.
+
+    ``report`` is the same :class:`GateReport` the PR CI gate produces — the
+    rolling shadow aggregation reuses ``build_gate_report`` unchanged, with
+    primary records as the baseline and candidate records as the candidate.
+    """
+
+    candidate_prompt_hash: str
+    window_start: datetime
+    window_end: datetime
+    n_observations: int
+    passed: bool
+    report: GateReport
 
 
 class PromotionOut(BaseModel):

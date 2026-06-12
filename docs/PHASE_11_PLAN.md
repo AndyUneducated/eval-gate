@@ -4,6 +4,8 @@
 
 **状态**：DONE（新增 `src/evalgate/ui/` streamlit 多 page app + 最小 `/v1/runs*` REST 增量；测试 / lint / format 通过）
 
+> **后续更新（历史快照）**：下文规划的 `src/evalgate/eval_run/repository.py` 最终实现为 `judge.persistence` 里的 `list_runs` / `list_records` helper + `api/routers/evals.py`，并无独立 `eval_run/` 包。UI 后续（Phase 11.1）又加了第 4 个 page `4_Generate_Trace.py`（见文末补丁），现共 4 个 page。
+
 ---
 
 ## 一句话

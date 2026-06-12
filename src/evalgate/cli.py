@@ -41,6 +41,15 @@ Subcommands:
         in `eval_case_set_memberships` (Phase 7.5; no payload duplication).
         Refuses (rc=1) if the case is already a member.
 
+    evalgate shadow report --candidate-hash <h> [--window-hours 24]
+        Read-only: aggregate the trailing window of shadow_observations for
+        a candidate prompt hash into a 4-axis gate report (Phase 13).
+
+    evalgate shadow rollup --candidate-hash <h> [--window-hours 24]
+        Same aggregation, but persists a shadow_reports snapshot and fires the
+        regression webhook (Slack-compatible) when any axis regresses.
+        Exits 1 when the rolling report FAILs (a candidate regression).
+
 DB-touching subcommands connect to `DATABASE_URL` directly (no HTTP), so this
 works in CI without spinning up the API server.
 """
@@ -65,6 +74,7 @@ from evalgate.db.session import SessionLocal
 from evalgate.eval_set import repository
 from evalgate.evaluator import runner as eval_runner
 from evalgate.gate.decision import build_gate_report
+from evalgate.shadow import rollup as shadow_rollup
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
@@ -458,6 +468,85 @@ def _add_badcase_subcommands(parent: argparse._SubParsersAction) -> None:
     promote.set_defaults(func=_cmd_badcase_promote)
 
 
+def _cmd_shadow_rollup(args: argparse.Namespace) -> int:
+    async def run(session: AsyncSession):
+        row = await shadow_rollup.run_rollup(
+            session,
+            args.candidate_hash,
+            window_hours=args.window_hours,
+        )
+        summary = row.report.get("summary") if isinstance(row.report, dict) else None
+        return {
+            "id": row.id,
+            "candidate_prompt_hash": row.candidate_prompt_hash,
+            "window_start": row.window_start,
+            "window_end": row.window_end,
+            "n_observations": row.n_observations,
+            "passed": row.passed,
+            "alerted": row.alerted,
+            "summary": summary,
+        }
+
+    result = asyncio.run(_with_session(run))
+    _print(result)
+    return 0 if result.get("passed") else 1
+
+
+def _cmd_shadow_report(args: argparse.Namespace) -> int:
+    async def run(session: AsyncSession):
+        report, obs, window_start, window_end = await shadow_rollup.compute_live_report(
+            session,
+            args.candidate_hash,
+            window_hours=args.window_hours,
+        )
+        return {
+            "candidate_prompt_hash": args.candidate_hash,
+            "window_start": window_start,
+            "window_end": window_end,
+            "n_observations": len(obs),
+            "passed": report.passed,
+            "report": report.model_dump(mode="json"),
+        }
+
+    result = asyncio.run(_with_session(run))
+    _print(result)
+    return 0 if result.get("passed") else 1
+
+
+def _add_shadow_subcommands(parent: argparse._SubParsersAction) -> None:
+    shadow = parent.add_parser(
+        "shadow",
+        help="Roll up production shadow observations into a 4-axis report.",
+    )
+    sub = shadow.add_subparsers(dest="shadow_cmd", required=True)
+
+    report = sub.add_parser(
+        "report",
+        help="Compute (read-only) a rolling shadow report for a candidate prompt hash.",
+    )
+    report.add_argument(
+        "--candidate-hash",
+        required=True,
+        dest="candidate_hash",
+        help="candidate_prompt_hash (the SDK's grouping key).",
+    )
+    report.add_argument("--window-hours", type=int, default=24, dest="window_hours")
+    report.set_defaults(func=_cmd_shadow_report)
+
+    rollup = sub.add_parser(
+        "rollup",
+        help="Compute + persist a shadow report snapshot and alert on regression.",
+    )
+    rollup.add_argument(
+        "--candidate-hash",
+        required=True,
+        dest="candidate_hash",
+        help="candidate_prompt_hash (the SDK's grouping key).",
+    )
+    rollup.add_argument("--window-hours", type=int, default=24, dest="window_hours")
+    rollup.set_defaults(func=_cmd_shadow_rollup)
+
+
 def _add_eval_set_subcommands(parent: argparse._SubParsersAction) -> None:
     eval_set = parent.add_parser("eval-set", help="Manage eval sets and cases.")
     sub = eval_set.add_subparsers(dest="eval_set_cmd", required=True)
@@ -552,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_eval_set_subcommands(sub)
     _add_run_subcommand(sub)
     _add_badcase_subcommands(sub)
+    _add_shadow_subcommands(sub)
 
     args = parser.parse_args(argv)
     return args.func(args)

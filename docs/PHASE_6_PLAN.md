@@ -5,6 +5,8 @@
 
 **状态**：DONE
 
+> **后续更新（历史快照）**：下文提到的 `src/evalgate/judge/runner.py` 已在 Phase 8 重构为 `src/evalgate/evaluator/runner.py`（EvaluatorRouter 统一分派）；judge wrapper 嵌套拓扑本身不变。
+
 ## 真实数据（本机 Ollama, 2026-05-14）
 
 5 条 billing case（带 `expected.output` reference），N=3 次重复，
@@ -23,7 +25,7 @@ stdev 会平凡地等于 0，对比无信息。）
 
 ## 一句话
 
-Phase 5 是「1 个 judge 给 1 条 case 打 1 次分」。Phase 6 把它变成「**N 个 judge × A/B 互换 × K 次重打**」的聚合分数，并把每一次原始 judge 调用都落库（新表 `eval_judge_calls`），方便后面 Phase 14 / 17 复盘 / 标定。
+Phase 5 是「1 个 judge 给 1 条 case 打 1 次分」。Phase 6 把它变成「**N 个 judge × A/B 互换 × K 次重打**」的聚合分数，并把每一次原始 judge 调用都落库（新表 `eval_judge_calls`），方便后面 Phase 17 / 16 复盘 / 标定。
 
 ## 三层结构（外到内）
 
@@ -47,10 +49,10 @@ flowchart LR
 
 - **拆 RubricJudge → PointwiseJudge / PairwiseJudge 两个类**，删除原 `rubric_judge.py`；公共 litellm 壳抽到 `protocol.py`。
 - **PairwiseJudge 只输出 `winner: A|B|tie`**，不直接返回 `score`；`score`（0/0.5/1）由外层 `PositionSwapJudge` 聚合。
-- **新加 `eval_judge_calls` 明细表 + 0005 migration**：per-call 一行；Phase 14/17 直接查表，不重跑 judge。
+- **新加 `eval_judge_calls` 明细表 + 0005 migration**：per-call 一行；Phase 17/16 直接查表，不重跑 judge。
 - **prompt.yaml breaking**：删除单数 `judge:`；必须 `judges: [...]` + `judge_policy:`。
 - **`case.expected` 缺失（pairwise 模式）**：fail-fast skip 该 case 并打 `error` 字段，不静默 fallback。
-- **并发**：跨 case 串行（保留 Phase 16 stream），单 case 内 `N × K × P` 次 judge 调用走 `asyncio.gather + Semaphore`，默认 4。
+- **并发**：跨 case 串行（保留 Phase 15 stream），单 case 内 `N × K × P` 次 judge 调用走 `asyncio.gather + Semaphore`，默认 4。
 - **CLI**：`evalgate run` 保持，扩 `--k` / `--concurrency` / `--policy-mode` 用于复现实验脚本。
 
 ## 1. prompt.yaml schema（breaking）
@@ -208,5 +210,5 @@ agg = await judge_stack.score(case_input, candidate_text, reference=case.expecte
 ## 12. Forward-compat
 
 - Phase 7（BadCase Finder）：`judge_confidence` 现在真有信号 → uncertainty sampling 排序可用。
-- Phase 17（Calibration）：直接查 `eval_judge_calls` 表 + 人工标注 join，不重跑 judge。
-- Phase 14（κ 实验）：同上。
+- Phase 16（Calibration）：直接查 `eval_judge_calls` 表 + 人工标注 join，不重跑 judge。
+- Phase 17（κ 实验）：同上。

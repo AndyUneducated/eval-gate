@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
+    # Phase 13 Shadow Mode: Slack-compatible incoming-webhook URL. When a
+    # rolling shadow report shows a regressed axis, ``shadow.alert`` POSTs a
+    # ``{"text": ...}`` payload here. Unset -> alerts degrade to a structlog
+    # warning (demo / local default).
+    shadow_webhook_url: str | None = Field(
+        default=None,
+        validation_alias="EVALGATE_SHADOW_WEBHOOK_URL",
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

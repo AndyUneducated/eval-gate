@@ -76,7 +76,7 @@ safety 轴的 4 个子维度（sub-metric）：`pii_input_rate`（输入含 PII�
 回归会按 `tag` / `intent` 做归因（attribution），因此报告写的是
 *"billing intent 掉了 8 个点"*，而不是 *"pass rate 掉了 0.5%"*。
 
-> **状态**：Phase 0–12 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通，**CI 卡口已从 fixtures 切到真 judge 流水线**（Phase 12）。
+> **状态**：Phase 0–13 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通，**CI 卡口已从 fixtures 切到真 judge 流水线**（Phase 12），并新增 **Shadow Mode**（生产流量上无害评测 candidate，Phase 13 · 见 [`docs/SHADOW.md`](docs/SHADOW.md)）。
 > 详见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 架构总览
@@ -123,6 +123,7 @@ graph TB
 |---|---|
 | [`docs/design.md`](docs/design.md) | 完整的产品 + 技术 spec —— 功能、架构、取舍的唯一信息源，先看这个。 |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 分阶段的交付计划（每个阶段大约 1 人天），用 `[DONE]` / `[NEXT]` / `[TODO]` 跟踪。 |
+| [`docs/SHADOW.md`](docs/SHADOW.md) | Shadow Mode（Phase 13）3 行接入指南 —— 生产流量上无害评测 candidate。 |
 | [`DECISIONS.md`](DECISIONS.md) | ADR 风格的关键技术决策日志（为什么用 OTel、为什么 PG+JSONB、为什么砍掉 prompt UI ……）。 |
 | [`JOURNAL.md`](JOURNAL.md) | 倒序的里程碑日志 —— 每个上线阶段一段话。 |
 
@@ -183,6 +184,7 @@ consumer app + prompt，就能把卡口接到你自己的 pipeline 上。
 | `make format` | 自动修复 lint + format |
 | `make db-up` / `make db-down` | 管理本地 Postgres |
 | `make ui` | 在 `http://127.0.0.1:8501` 启动 Streamlit 运维 UI（通过 HTTP 调 `evalgate-api`） |
+| `make shadow-smoke` | Phase 13 Shadow Mode 端到端 smoke（离线：1k 流量 → 滚动报告 → 报警） |
 
 ## 运维 UI（Phase 11）
 
@@ -197,13 +199,14 @@ uv run evalgate-api             # 一个 shell — 8000 端口
 make ui                         # 另一个 shell — 8501 端口，会自动开浏览器
 ```
 
-三个页面：
+四个页面：
 
 1. **Traces** —— 分页列表 + span 树详情；"Promote to eval set" 按钮包了
    `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`。
 2. **Eval Sets** —— 新建 eval set；选中后可以看它的 cases。
 3. **Reports** —— 选一个 eval set、两个 `eval_runs`（baseline / candidate），
    渲染四维卡口结论 + 子维度（RAG / safety）+ tag 归因。
+4. **Generate Trace** —— 在 UI 里直接造一条 demo trace 推到后端，方便空库快速体验。
 
 API 地址用 `EVALGATE_API_URL` 配置（默认 `http://127.0.0.1:8000`）。
 

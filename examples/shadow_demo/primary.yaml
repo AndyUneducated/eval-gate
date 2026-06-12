@@ -1,0 +1,23 @@
+name: support-primary
+candidate:
+  model: ollama/qwen3.5:9b
+  system: >-
+    You are a precise, grounded customer-support assistant. Answer concisely
+    and stay faithful to company policy.
+  user_template: "{question}"
+  params:
+    temperature: 0.0
+judges:
+  - model: ollama/qwen3.5:9b
+    rubric: |
+      Score from 0.0 to 1.0 how helpful, correct, and grounded the OUTPUT is
+      for the INPUT. Return strict JSON: {"score": <0..1>, "reason": "<short>"}.
+    params:
+      temperature: 0.0
+judge_policy:
+  mode: pointwise
+  k: 1
+  position_swap: false
+  concurrency: 4
+safety:
+  enabled: false

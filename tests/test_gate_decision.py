@@ -71,14 +71,28 @@ def test_attribution_surfaces_worst_tag() -> None:
     )
 
 
-def test_latency_p95_axis_has_no_ci() -> None:
+def test_latency_p95_axis_has_bootstrap_ci() -> None:
     base = _make_records(seed=0)
     cand = _make_records(seed=0)
     report = build_gate_report(base, cand)
     latency = next(a for a in report.axes if a.name == "latency_p95")
-    assert latency.ci_low is None
-    assert latency.ci_high is None
-    assert not latency.significant
+    # p95 is now judged with the same bootstrap machinery as the mean axes.
+    assert latency.ci_low is not None
+    assert latency.ci_high is not None
+    assert latency.passed
+
+
+def test_latency_p95_tolerates_sub_band_noise() -> None:
+    # A small tail bump (under the relative-tolerance band) must NOT fail the
+    # gate, even if the bootstrap CI happens to call it significant.
+    base = _make_records(seed=0)
+    cand = _make_records(seed=0)
+    for r in cand:
+        r["latency_ms"] = int(r["latency_ms"] * 1.03)  # +3%, well under the 10% band
+    report = build_gate_report(base, cand)
+    latency = next(a for a in report.axes if a.name == "latency_p95")
+    assert latency.passed
+    assert latency.delta > 0
 
 
 def test_latency_p95_regression_fails_when_tail_worsens() -> None:
@@ -90,6 +104,7 @@ def test_latency_p95_regression_fails_when_tail_worsens() -> None:
     latency = next(a for a in report.axes if a.name == "latency_p95")
     assert not latency.passed
     assert latency.delta > 0
+    assert latency.significant
 
 
 def test_all_four_axes_can_fail_together() -> None:

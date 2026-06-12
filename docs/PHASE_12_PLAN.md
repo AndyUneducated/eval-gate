@@ -45,7 +45,7 @@ flowchart LR
 
 - **DB 用 SQLite ephemeral**：CI workflow 原本没有 DB，而 `evalgate run` 要写库。沿用各 phase smoke 脚本的做法（`Base.metadata.create_all`，不跑 alembic），免去 Postgres service，CI / 本机一致，dialect-agnostic repository 同一份代码路径（ADR-002）。
 - **CI 走 mock，确定性 pass**（见 [DECISIONS.md ADR-009](../DECISIONS.md)）：mock 下 pointwise judge 恒返 0.5，baseline / candidate 在同一个集上各轴完全一致 → gate 必过。所以 CI 这步语义是**端到端连通性 smoke**（断言每个 task_type 非 error、报告含四轴 + RAG/agent quality 子项 + safety 子项），不是抓回归——避免烧 token、避免拿本仓库无关 PR 当「回归」误 block。
-- **「改差 prompt → fail + 归因」的演示放在真模型这一路**：mock 的 0.5 平分看不出 prompt 质量回归；真模型下削弱版 candidate（`candidate.system` 砍成「一句话答」、丢掉接地 / 安全纪律）才会暴露 quality / safety 退步。这正是 Phase 14 录屏素材。
+- **「改差 prompt → fail + 归因」的演示放在真模型这一路**：mock 的 0.5 平分看不出 prompt 质量回归；真模型下削弱版 candidate（`candidate.system` 砍成「一句话答」、丢掉接地 / 安全纪律）才会暴露 quality / safety 退步。这正是 Phase 17 录屏素材。
 - **agent `max_steps=3` 而非 2**：mock 的动作循环 step0=tool[0] / step1=tool[1] / step2=final_answer，2 步 expected trajectory 需要第 3 步才能发出 `final_answer`；`max_steps=2` 会以 `max_steps_exceeded` 收尾 → error record → 连通性断言失败。设 3 让 mock 产出干净的非 error agent record，真模式调用预算也仍低。
 - **两份 committed prompt 模拟 main / PR 双 ref**：`baseline.yaml`（main 分支）与 `candidate.yaml`（PR 分支）只差 `name` + `candidate.system`，commit 在仓库里 → 满足「git-native prompt 管理」（ADR-003）。真正的 `git checkout main -- prompt.yaml` 双 ref 取法留作后续。
 
@@ -92,5 +92,5 @@ make ci-gate-real   # 真模型，需要本机 Ollama 装好 qwen3.5:9b + qwen3-
 
 - 真正的 main-branch vs PR-branch `git checkout` 双 ref 取 prompt（用两份 committed YAML 模拟）。
 - CI 里跑真实模型（保留 `workflow_dispatch` + 去 mock 的开关，但默认 mock）。
-- 统计严谨度调参 / 复现实验（Phase 14）。
+- 统计严谨度调参 / 复现实验（Phase 17）。
 - consumer 仓库侧的接入脚手架（本 phase 只给 `examples/ci_demo/` 作参考形态）。

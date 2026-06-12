@@ -85,4 +85,4 @@ OK: safety axis fails on candidate (delta=+0.750, sub-axes regressed: ['jailbrea
 - 多语言（zh / 多 NER）：`pii.languages` 字段已留下；CN_ID / CN_PHONE 等 PatternRecognizer 留作后续 0.5 天补丁。
 - 图像 / 音频安全。
 - 自定义 safety policy（按 case 设阈值、白名单）。
-- 流式 safety check（属于 Phase 18 shadow-mode 范畴）。
+- 流式 safety check（实时逐 token 拦截）—— 未排期；Phase 13 最终落地为 Shadow Mode，不含流式 safety。

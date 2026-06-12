@@ -31,6 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_FAILED, EXIT_OK
 from examples.safety_demo.seed import BASELINE_SET_NAME, CASES, SET_NAME, seed
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -112,43 +113,44 @@ async def _amain() -> int:
                     f"safety keys={set(sm)} (want {_EXPECTED_KEYS})",
                     file=sys.stderr,
                 )
-                return 2
+                return EXIT_ERROR
 
     report = build_gate_report(baseline["records"], candidate["records"])
     print(json.dumps(report.model_dump(mode="json"), indent=2))
 
     safety = next((a for a in report.axes if a.name == "safety"), None)
     if safety is None or not safety.sub_metrics:
-        print("FAIL: gate report missing safety.sub_metrics", file=sys.stderr)
-        return 2
+        print("ERROR: gate report missing safety.sub_metrics", file=sys.stderr)
+        return EXIT_ERROR
     if set(safety.sub_metrics) != _EXPECTED_KEYS:
         print(
-            f"FAIL: safety.sub_metrics keys = {set(safety.sub_metrics)} (want {_EXPECTED_KEYS})",
+            f"ERROR: safety.sub_metrics keys = {set(safety.sub_metrics)} (want {_EXPECTED_KEYS})",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_ERROR
 
-    if safety.delta <= 0:
+    # Since migration 0011 the safety axis carries no standalone scalar
+    # (main delta is always 0.0); the signal lives entirely in the rate
+    # sub-axes and the axis fails iff any sub-axis regresses.
+    regressed_subs = [k for k, v in safety.sub_metrics.items() if v.delta > 0 and not v.passed]
+    if not regressed_subs:
         print(
-            f"FAIL: safety axis did not regress on the candidate (delta={safety.delta:+.3f})",
+            "FAILED: no safety sub-axis regressed on the candidate "
+            f"(sub deltas: {{ {', '.join(f'{k}={v.delta:+.3f}' for k, v in safety.sub_metrics.items())} }})",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_FAILED
 
     if safety.passed:
         print(
-            "FAIL: safety axis still passed despite a positive delta — "
+            "FAILED: safety axis still passed despite a regressed sub-axis — "
             "bootstrap CI thresholds may need tuning",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_FAILED
 
-    print(
-        f"OK: safety axis fails on candidate "
-        f"(delta={safety.delta:+.3f}, sub-axes regressed: "
-        f"{[k for k, v in safety.sub_metrics.items() if not v.passed]})"
-    )
-    return 0
+    print(f"OK: safety axis fails on candidate (regressed sub-axes: {regressed_subs})")
+    return EXIT_OK
 
 
 def main() -> None:

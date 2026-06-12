@@ -16,7 +16,7 @@ Two modes:
   is the plumbing/connectivity check the CI runs on every PR (zero token cost).
 - **real** (no mock; needs a local Ollama with ``qwen3.5:9b`` +
   ``qwen3-embedding:8b``): the weakened candidate prompt actually regresses, so
-  the gate may fail. Used for the demo / Phase 14 numbers.
+  the gate may fail. Used for the demo / Phase 17 numbers.
 
 Usage::
 
@@ -45,6 +45,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from _smoke import EXIT_ERROR, EXIT_FAILED, EXIT_OK, mock_from_env
 from examples.ci_demo.seed import SET_NAME, TOTAL_CASES, seed
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -155,11 +156,7 @@ def _assert_report(report) -> list[str]:
 
 
 async def _amain(args: argparse.Namespace) -> int:
-    mock = bool(args.mock) or os.environ.get("EVALGATE_MOCK_LLM", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    mock = bool(args.mock) or mock_from_env()
 
     if not os.environ.get("DATABASE_URL"):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
@@ -199,12 +196,13 @@ async def _amain(args: argparse.Namespace) -> int:
         print("CONNECTIVITY FAILURES:", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
-        return 2
+        return EXIT_ERROR
 
     print(f"gate decision: {'PASS' if report.passed else 'FAIL'}")
     if report.summary:
         print(f"summary: {report.summary}")
-    return 0 if report.passed else 1
+    # phase12 IS the gate: exit code is the verdict (0 pass / 1 regression).
+    return EXIT_OK if report.passed else EXIT_FAILED
 
 
 def main() -> None:

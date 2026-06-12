@@ -7,7 +7,7 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：核心交付线是 Phase 0–12 + 14（**Phase 0–12 已完成**，仅剩 Phase 14 Demo 打磨，≈ 1 人天）即达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
+> **总体节奏**：核心交付线 **Phase 0–12 已全部完成**，即达到 design.md 描述的完整形态；亮点线已落地第一站 **Phase 13 Shadow Mode**。之后按需继续做 **亮点 phase**（后端 / 平台向推荐 **14 → 15**，Phase 16 暂缓）拉高简历与面试深度；**最后**用 **Phase 17 Demo 打磨**（录屏 + 最终数字，≈ 1 人天）一次性收尾打包——放最后是为了覆盖到所有已建功能。
 
 ---
 
@@ -28,8 +28,11 @@
 | Phase 10 | Safety 轴（PII + jailbreak） | `[DONE]` |
 | Phase 11 | Streamlit Ops UI v1 | `[DONE]` |
 | Phase 12 | 真实 CI Gate 端到端（替换 fixtures） | `[DONE]` |
-| Phase 14 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]` ← 下一步 |
-| Phase 15–18 | 亮点 phase（对抗出题 / 序贯 gate / 标定 / 影子模式） | `[TODO]`（可选） |
+| Phase 13 | Shadow Mode（影子模式） | `[DONE]`（亮点 · 推荐 #1） |
+| Phase 14 | Adversarial Synth（对抗出题） | `[TODO]`（亮点 · 推荐 #2）← 下一步 |
+| Phase 15 | Sequential Gate（序贯 gate） | `[TODO]`（亮点 · 推荐 #3） |
+| Phase 16 | Judge Calibration（标定） | `[TODO]`（暂缓 / ML 研究向） |
+| Phase 17 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]`（最后收尾 · 打磨数字 / 录屏） |
 
 核心 phase 是一条线性流水线，每个都建立在前一个之上：
 
@@ -42,13 +45,14 @@ flowchart LR
     P5 --> P7["P7<br/>BadCase Finder"]
     P5 --> P8["P8–10<br/>RAG / Agent / Safety"]
     P8 --> P11["P11<br/>Ops UI"]
-    P11 --> P12["P12<br/>真实 CI Gate"]
-    P12 --> P14["P14<br/>Demo 打磨"]
+    P11 --> P12["P12<br/>真实 CI Gate（核心完成）"]
+    P12 -.亮点 phase.-> P13["P13<br/>Shadow Mode"]
+    P13 -.其余亮点之后.-> P17["P17<br/>Demo 打磨（收尾）"]
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724;
     classDef todo fill:#fff3cd,stroke:#ffc107,color:#856404;
-    class P0,P2,P3,P4,P5,P7,P8,P11,P12 done;
-    class P14 todo;
+    class P0,P2,P3,P4,P5,P7,P8,P11,P12,P13 done;
+    class P17 todo;
 ```
 
 ---
@@ -105,8 +109,8 @@ flowchart LR
 - **已交付**：
   - `src/evalgate/judge/`：`prompt_spec` / `candidate` / `rubric_judge` / `persistence` / `runner` 五件套；`RubricJudge` 三层解析（JSON → regex → score=0 兜底）。
   - `evalgate run --eval-set X --prompt p.yaml --out r.json [--judge-model ...] [--mock] [--limit N]`，输出 JSON 字段对齐 Phase 2 `gate` 入参。
-  - 两张新表 `eval_runs` / `eval_results` + 0004 migration；`judge_confidence` + `judge_raw` 字段为 Phase 17 Calibration 预留。
-  - `core/schemas.py` 加 `EvalRecord` pydantic model 固化 gate / shadow（Phase 18）的字段契约。
+  - 两张新表 `eval_runs` / `eval_results` + 0004 migration；`judge_confidence` + `judge_raw` 字段为 Phase 16 Calibration 预留。
+  - `core/schemas.py` 加 `EvalRecord` pydantic model 固化 gate / shadow（Phase 13）的字段契约。
   - 19 个新测试（72/72 全绿）：prompt_spec、rubric_judge、candidate、runner、runner→gate 端到端、CLI 端到端，全部走 aiosqlite + `mock_response`。
   - 本地 demo（真实 Ollama qwen2.5:7b，无 fixtures）：3 条 billing case，baseline vs candidate 两次 run → 4 轴 gate 报告齐全，latency_p95 12.7s → 1.3s 体现弱化 prompt 的真信号。
 - **commit**：（待 commit）
@@ -120,7 +124,7 @@ flowchart LR
   - `PositionSwapJudge` wrapper：A/B 互换两次取一致；冲突 → 0.5 + `agreement=False`。
   - `SelfConsistencyJudge`：K 次重打，`confidence = 1 - stdev / 0.5`。
   - `prompt.yaml` 改 `judges: [...] + judge_policy:`（**breaking**，旧单数 `judge:` 报错并附迁移示例）。
-  - 新表 `eval_judge_calls`（0005 migration）：N×K×P 行/case，Phase 14/17 可直接 SQL 复盘。
+  - 新表 `eval_judge_calls`（0005 migration）：N×K×P 行/case，Phase 17/16 可直接 SQL 复盘。
   - `evalgate run --k / --concurrency / --policy-mode` 覆盖实验脚本用。
   - [scripts/phase6_variance.py](../scripts/phase6_variance.py) 真本机实测：single 0.0377 vs multi 0.0136（lower 即更稳）。
 - **退出标准**：单测覆盖五种 wrapper + 迁移；本机 Ollama 真数据写 JOURNAL。
@@ -212,21 +216,9 @@ flowchart LR
   - `make ci-gate`（mock）/ `make ci-gate-real`（本机 Ollama）。
   - **DB 用 SQLite ephemeral**（`Base.metadata.create_all`，不跑 alembic），CI 不依赖 Postgres service，和各 phase smoke 脚本一致。
 - **退出标准达成**：`make ci-gate` mock 端到端绿（4 等价类全连通，报告四轴 + 子项齐全，~6s）；`make ci-gate-real`（qwen3.5:9b + qwen3-embedding:8b）实测 **~140s**（两轮 8 次评测），削弱版 candidate 触发 `quality` 轴 fail，归因点名 `answer_relevance` 子项 + `rag` tag。
-- **mock vs real 的刻意设计**：mock 下 baseline/candidate 同集各轴一致 → gate 必过，CI 这步是纯连通性检查；真模型下削弱 prompt 才暴露质量/安全回归（Phase 14 录屏素材）。详见 [DECISIONS.md ADR-009](../DECISIONS.md)。
+- **mock vs real 的刻意设计**：mock 下 baseline/candidate 同集各轴一致 → gate 必过，CI 这步是纯连通性检查；真模型下削弱 prompt 才暴露质量/安全回归（Phase 17 录屏素材）。详见 [DECISIONS.md ADR-009](../DECISIONS.md)。
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_12_PLAN.md](./PHASE_12_PLAN.md)。
-
-## Phase 14 · Demo 打磨（数据 + 录屏 + 数字）   [TODO]
-
-- **目标**：让简历 bullet 里的数字（±15% → ±3%、κ ~0.85、pass rate）有真实实验支撑。
-- **交付**：
-  - 跑一组复现实验：固定一个 eval set，单 judge vs multi-judge 各跑 10 次，统计标准差。
-  - 跑 Cohen's κ：自己手工标 30-50 条 case 当人工 ground truth，对比 judge。
-  - 录一段 3-5 分钟 screencast：trace 上报 → BadCase 入 eval set → 改 prompt → PR fail / pass 全流程。
-  - 把数字回填到 design.md 第 4 节（简历 bullet）+ JOURNAL.md。
-  - 简单 load test：`locust` 或 `wrk` 打 `/v1/otel/traces`，记 throughput / p95。
-- **退出标准**：简历 bullet 不再有"虚数"。
-- **预估**：1 天。
 
 ---
 
@@ -234,39 +226,64 @@ flowchart LR
 
 > 这四个 phase **不在 design.md 的最小完整形态里**，是给 EvalGate 加技术深度 / 简历亮点用的。
 > 每个 phase 都标了 **依赖**（必须先做完哪些 phase）；不强制按编号顺序。
+>
+> **推荐路线（后端 / 平台工程向，深度优先做 3 个）**：核心 Phase 0–12 已完成，按此优先级挑 **3 个**亮点 phase 做透，最后再用 Phase 17 收尾——
+> 1. **Phase 13 Shadow Mode** ✅ 已完成（首选）：online shadow eval / 生产流量 A/B / 异步 fire-and-forget，几乎任何后端面试官都能聊。
+> 2. **Phase 14 Adversarial Synth**（下一步）：自动红队 + 闭环飞轮，LLM-safety 话题热、工程量适中，性价比高。
+> 3. **Phase 15 Sequential Gate**：cost-aware CI + 序贯检验，给一张"统计深度"的牌。
+>
+> **Phase 16 Calibration 暂缓**：ML / 研究向最强，但对后端受众 ROI 偏低，且依赖 Phase 17 的人标数据——目标若转向 ML/研究再做。
+>
+> **Phase 17 Demo 打磨**放在所有 phase **最后**（见文末）：它是收尾打包，不是 feature。
 
 依赖关系一览（箭头 = "依赖于"）：
 
 ```mermaid
 flowchart LR
-    P2["P2 Gate"] --> P16["P16 Sequential Gate"]
-    P6["P6 Multi-Judge"] --> P16
-    P7["P7 BadCase Finder"] --> P15["P15 Adversarial Synth"]
-    P10["P10 Safety"] --> P15
-    P6 --> P17["P17 Calibration"]
-    P14["P14 Demo（人工标注）"] --> P17
-    P5["P5 Runner"] --> P18["P18 Shadow Mode"]
-    P3["P3 OTel ingest"] --> P18
+    P5["P5 Runner"] --> P13["P13 Shadow Mode"]
+    P3["P3 OTel ingest"] --> P13
+    P7["P7 BadCase Finder"] --> P14["P14 Adversarial Synth"]
+    P10["P10 Safety"] --> P14
+    P2["P2 Gate"] --> P15["P15 Sequential Gate"]
+    P6["P6 Multi-Judge"] --> P15
+    P6 --> P16["P16 Calibration"]
+    P17["P17 Demo（人工标注）"] --> P16
 
     classDef hl fill:#e7d4f7,stroke:#8a2be2,color:#3a0a5d;
-    class P15,P16,P17,P18 hl;
+    class P13,P14,P15,P16 hl;
 ```
 
-## Phase 15 · Adversarial Case Synth（红队自动出题）   [TODO]
+> 下面 4 个亮点 phase **按推荐优先级排列**（不是编号顺序）：13 → 14 → 15 → 16（Shadow → Adversarial → Sequential → Calibration，其中 16 暂缓）。phase 编号是稳定 ID（被代码 / 其它 plan 文档引用），不重排号、只重排做的先后。
+
+## Phase 13 · Shadow Mode（线上流量上做无害评测）   [DONE · 推荐 #1（后端首选）]
+
+- **目标**：candidate prompt 不只在 PR 上被评——**生产 X% 流量也并发跑 candidate**（结果不返给用户），同一套 4 轴聚合 → 提前发现 PR eval set 覆盖不到的 "unknown unknown"。
+- **依赖**：Phase 5（runner）+ Phase 3（trace ingest）。**不阻塞于公网部署**：demo app → localhost 即可完整演示，"公网可达"只在接真实外部 caller 时才需要（可选）。
+- **交付**：
+  - 客户端 SDK：`shadow(case_input, primary=..., candidate=..., sample_rate=0.1)` 包一层——sample 命中时后台并发跑 candidate，**SDK 侧本地复用 judge 给两边打分**，结果**异步**推回 EvalGate；**fire-and-forget + 超时即丢**，绝不阻塞 / 抛错进主路径。
+  - Backend（薄写入 + 聚合层）：`POST /v1/shadow/observe` 接收一对已打分 `EvalRecord`，按 `candidate_prompt_hash` 聚合；新表 `shadow_observations` + `shadow_reports`；`GET /v1/shadow/reports` 实时算 4 轴、`POST /v1/shadow/rollup` 落快照（**on-demand，不内置定时器，生产用 cron**）。
+  - 报警：rollup 时若 candidate 任一轴显著变差 → Slack 兼容 webhook 通知（未配 webhook 则降级日志）。
+  - 文档 [docs/SHADOW.md](./SHADOW.md)：接入只要 3 行代码。
+- **退出标准达成**：`make shadow-smoke` 离线跑 1k 主流量 → 滚动 report 含 quality/cost/latency_p95/safety 四轴，candidate cost +20% → cost 轴显著 regress、`passed=False`、报警触发（`shadow_reports.alerted=True`）；SDK 侧打分 + fire-and-forget（1s 超时）+ `/v1/shadow/observe|reports|rollup` 三端点 + 0012 migration 全落地，20 个新测试绿。
+- **预估**：1 天（不含 cloud 部署本身）。
+- **简历语言**：online shadow evaluation + production-traffic A/B + unknown-unknown detection。
+- **详细技术方案**：见 [docs/PHASE_13_PLAN.md](./PHASE_13_PLAN.md) + 接入指南 [docs/SHADOW.md](./SHADOW.md)。
+
+## Phase 14 · Adversarial Case Synth（红队自动出题）   [TODO · 推荐 #2]
 
 - **目标**：从 attribution 报告找最弱 tag → 用 generator-LLM **自动生成同 tag 的"刁钻 case"** → 人审后入 eval set，形成 "评测 → 找弱点 → 自动出题 → 再评测" 的飞轮。
 - **依赖**：Phase 7（BadCase Finder 提供 attribution + uncertainty）+ Phase 10（safety 检测器复用做对抗模板，可不严格阻塞）。
 - **交付**：
   - `AdversarialSynth`：输入 `(tag, weak_cases[5..10])`，调用 generator-LLM 产 K=10 条候选 case；模板覆盖：边界值、歧义指代、prompt injection（"ignore previous instructions..."）、role confusion。
   - 人审 gate：生成的 case 进 `eval_cases.status="pending"`，**不参与 gate**；CLI `evalgate adversarial review --set <id>` 逐条 approve/reject 切到 `status="active"`。
-  - `eval_cases` 加 `status` enum（pending/active/archived）+ `source` enum（trace/manual/adversarial）→ 0006 migration。
+  - `eval_cases` 加 `status` enum（pending/active/archived）+ `source` enum（trace/manual/adversarial）→ 新建 migration（下一个可用编号 0013+）。
   - REST：`POST /v1/eval-sets/{id}/adversarial?tag=<t>&k=10`。
   - 报告：`evalgate adversarial stats` 输出近 N 次 adversarial 命中率（多少条让 candidate 得分降 ≥ 0.2）。
 - **退出标准**：从 billing tag 自动出 10 条，approve 6 条；新 candidate 在其中 ≥3 条得分 < 0.5 → gate fail；录一段 demo screencast。
 - **预估**：1 天。
 - **简历语言**：automated red-teaming + adversarial regression suite + closed-loop eval。
 
-## Phase 16 · Sequential Gate（边跑边判，省 judge 调用）   [TODO]
+## Phase 15 · Sequential Gate（边跑边判，省 judge 调用）   [TODO · 推荐 #3]
 
 - **目标**：CI gate 不再"跑满 N 才下结论"，而是流式接 `(case_id, score)`，每跑 K 条评估一次 → **显著变差立即停跑 fail / 显著一致提前 pass**，控制累计 Type-I error。
 - **依赖**：Phase 2（bootstrap CI 实现）+ Phase 6（per-case score 流式产出）。
@@ -279,12 +296,12 @@ flowchart LR
 - **预估**：1 天（统计实现 + 蒙特卡洛单测占大头）。
 - **简历语言**：group sequential testing + α-spending function + cost-aware CI。
 
-## Phase 17 · Judge Calibration（ECE + temperature scaling）   [TODO]
+## Phase 16 · Judge Calibration（ECE + temperature scaling）   [TODO · 暂缓 / ML 研究向]
 
 - **目标**：让 judge 给出的 `confidence` 真有概率意义——judge 说 0.8，实际人工通过率就是 80%。
-- **依赖**：Phase 6（multi-judge confidence）+ Phase 14（人工标注 ground truth ≥ 30 条）。
+- **依赖**：Phase 6（multi-judge confidence）+ Phase 17（人工标注 ground truth ≥ 30 条）。**注**：Phase 17 虽排在文末收尾，但真要做本 phase 时，需把其中 Cohen's κ 人工标注那一步提前到这里。
 - **交付**：
-  - 用 Phase 14 那批人标 case 配对 `(judge_score, human_label)`：
+  - 用 Phase 17 那批人标 case 配对 `(judge_score, human_label)`：
     - 画 **reliability diagram**（10 bins）；
     - 算 **ECE** + **MCE**；
     - 跑 **temperature scaling**（单参数 logistic）拟合 → 落到 `calibration_params.json`。
@@ -295,24 +312,26 @@ flowchart LR
 - **预估**：1 天。
 - **简历语言**：Expected Calibration Error + temperature scaling + reliability diagram；引 Guo et al. 2017。
 
-## Phase 18 · Shadow Mode（线上流量上做无害评测）   [TODO]
+---
 
-- **目标**：candidate prompt 不只在 PR 上被评——**生产 X% 流量也并发跑 candidate**（结果不返给用户），同一套 4 轴聚合 → 提前发现 PR eval set 覆盖不到的 "unknown unknown"。
-- **依赖**：Phase 5（runner）+ Phase 3（trace ingest）+ 一个公网可达的部署（轻量路径即可，让真实生产 caller 接得上）。
+## Phase 17 · Demo 打磨（数据 + 录屏 + 数字）   [TODO · 最后收尾]
+
+- **定位**：不是 feature，是**最后的打磨收尾**——做完想做的亮点 phase 之后，统一录屏、跑最终数字、回填简历。放最后是为了一次性覆盖所有已建功能，避免每加一个 phase 就重录一遍。
+- **目标**：让简历 bullet 里的数字（±15% → ±3%、κ ~0.85、pass rate）有真实实验支撑。
 - **交付**：
-  - 客户端 SDK：`evalgate.shadow(primary_prompt, candidate_prompt, sample_rate=0.1)` 包一层——sample 命中时并发跑 candidate，结果**异步**推回 EvalGate；**fire-and-forget + 超时 1s 即丢**，绝不阻塞主路径。
-  - Backend：`POST /v1/shadow/observe` 接收 `(primary_result, candidate_result)` 对，按 `prompt_hash` 聚合；新表 `shadow_observations` + `shadow_reports`（每小时滚动算一次 4 轴）。
-  - 报警：rolling 24h shadow 报告里若 candidate 任一轴显著变差 → webhook 通知（Slack 优先）。
-  - 文档 [docs/SHADOW.md](./SHADOW.md)：接入只要 3 行代码。
-- **退出标准**：demo app 接入 shadow，跑 1k 次主流量，shadow report 给出 4 轴对比；故意让 candidate cost 高 20% 触发报警。
-- **预估**：1 天（不含 cloud 部署本身）。
-- **简历语言**：online shadow evaluation + production-traffic A/B + unknown-unknown detection。
+  - 跑一组复现实验：固定一个 eval set，单 judge vs multi-judge 各跑 10 次，统计标准差。
+  - 跑 Cohen's κ：自己手工标 30-50 条 case 当人工 ground truth，对比 judge。（注：这批人标数据也是 **Phase 16 Calibration 的前置**——若决定做 17，把这步提前。）
+  - 录一段 3-5 分钟 screencast：trace 上报 → BadCase 入 eval set → 改 prompt → PR fail / pass 全流程。
+  - 把数字回填到 design.md 第 4 节（简历 bullet）+ JOURNAL.md。
+  - 简单 load test：`locust` 或 `wrk` 打 `/v1/otel/traces`，记 throughput / p95。
+- **退出标准**：简历 bullet 不再有"虚数"。
+- **预估**：1 天。
 
 ---
 
 ## 执行守则
 
-1. **核心线不跳 phase**（Phase 0–12 → 14）。每个 phase 都有"可独立 demo"的退出标准，不要边做 phase 7 边做 phase 11。亮点 Phase 15–18 按依赖择机插入，可缓做。
+1. **核心线已完成（Phase 0–12）+ 亮点 Phase 13 Shadow Mode 已落地**，每个 phase 都有"可独立 demo"的退出标准。接下来按 **后端/平台向推荐路线**继续做亮点 phase：**14 → 15**（16 暂缓），深度优先、别贪多；**Phase 17 Demo 打磨放到最后**做收尾打包（录屏 / 最终数字）。
 2. **每个 phase 一个 PR / commit 块**。commit message 格式参照已有：`feat(scope): 一句话描述`。
 3. **每完成一个 phase**：
    - 改本文件状态为 `[DONE]`。
