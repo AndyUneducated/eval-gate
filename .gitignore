@@ -47,3 +47,6 @@ logs/
 data/
 *.sqlite
 *.db
+
+# Generated gate reports (CI artifact / local make ci-gate output)
+gate-report.json

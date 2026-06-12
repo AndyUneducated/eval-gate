@@ -7,7 +7,7 @@
 > 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
 > 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
 >
-> **总体节奏**：15 个核心 phase（Phase 0–14），其中 **12 个已完成（Phase 0–11）/ 3 个待办（Phase 12–14，≈ 3 人天）** 即达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
+> **总体节奏**：核心交付线是 Phase 0–12 + 14（**Phase 0–12 已完成**，仅剩 Phase 14 Demo 打磨，≈ 1 人天）即达到 design.md 描述的完整形态；外加 **4 个可选「亮点 phase」**（Phase 15–18）拉高简历与面试深度，按依赖择机插入。
 
 ---
 
@@ -27,9 +27,8 @@
 | Phase 9 | Agent Trajectory Evaluator | `[DONE]` |
 | Phase 10 | Safety 轴（PII + jailbreak） | `[DONE]` |
 | Phase 11 | Streamlit Ops UI v1 | `[DONE]` |
-| Phase 12 | 真实 CI Gate 端到端（替换 fixtures） | `[TODO]` ← 下一步 |
-| Phase 13 | Cloud 部署（AWS ECS + RDS） | `[TODO]` |
-| Phase 14 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]` |
+| Phase 12 | 真实 CI Gate 端到端（替换 fixtures） | `[DONE]` |
+| Phase 14 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]` ← 下一步 |
 | Phase 15–18 | 亮点 phase（对抗出题 / 序贯 gate / 标定 / 影子模式） | `[TODO]`（可选） |
 
 核心 phase 是一条线性流水线，每个都建立在前一个之上：
@@ -44,13 +43,12 @@ flowchart LR
     P5 --> P8["P8–10<br/>RAG / Agent / Safety"]
     P8 --> P11["P11<br/>Ops UI"]
     P11 --> P12["P12<br/>真实 CI Gate"]
-    P12 --> P13["P13<br/>Cloud 部署"]
-    P13 --> P14["P14<br/>Demo 打磨"]
+    P12 --> P14["P14<br/>Demo 打磨"]
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724;
     classDef todo fill:#fff3cd,stroke:#ffc107,color:#856404;
-    class P0,P2,P3,P4,P5,P7,P8,P11 done;
-    class P12,P13,P14 todo;
+    class P0,P2,P3,P4,P5,P7,P8,P11,P12 done;
+    class P14 todo;
 ```
 
 ---
@@ -204,27 +202,19 @@ flowchart LR
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_11_PLAN.md](./PHASE_11_PLAN.md)。
 
-## Phase 12 · 真实 CI Gate 端到端（替换 fixtures）   [TODO]
+## Phase 12 · 真实 CI Gate 端到端（替换 fixtures）   [DONE]
 
 - **目标**：CI 跑的不再是 `seed_demo.py` 的假数据，而是 Phase 5/6 真 judge 的输出。
-- **交付**：
-  - `eval-gate.yml` workflow 改成：(1) 拉一个固定的 reference eval set；(2) 用 PR 分支的 prompt 跑 judge；(3) 用 main 分支的 prompt 跑 judge；(4) diff → gate。
-  - 一个 `examples/consumer-app/` 子仓库（或 monorepo 子目录）当作 "被评测的 LLM 应用"，作为外部接入参考。
-  - prompt 用 YAML 维护，commit 在仓库里 → 满足"git-native prompt 管理"决策。
-  - Judge 调用走 LiteLLM mock（CI 不烧钱），但保留可切真模型的开关。
-- **退出标准**：在一个 demo PR 上把 prompt 改差一点，CI 自动 fail 且评论里指出 tag 归因。
-- **预估**：1 天。
-
-## Phase 13 · Cloud 部署（AWS ECS + RDS）   [TODO]
-
-- **目标**：一条 `make deploy` 把服务 push 上 AWS，URL 可访问。
-- **交付**：
-  - Dockerfile 做成 multi-stage（builder + slim runtime），落到 < 200MB。
-  - Terraform 或 AWS CDK：ECS Fargate service + ALB + RDS Postgres + Secrets Manager（OPENAI_API_KEY 等）+ ECR repo。
-  - GitHub Actions deploy workflow（OIDC，无静态 AWS key）。
-  - README 加 "Deployed demo: https://..." 链接。
-- **退出标准**：从公网 curl healthz 通；从 demo app 推 trace 通；UI 可访问。
-- **预估**：1 天（如果 AWS 账号 ready）。
+- **已交付**：
+  - `examples/ci_demo/`（consumer-app 样例）：`seed.py` 造一个混合 reference eval set（2 generic 含 PII/jailbreak + 1 rag + 1 agent，input 统一 `question` 键）+ `prompts/baseline.yaml` / `candidate.yaml` 两份 committed prompt（只差 `name` + `candidate.system`，candidate 故意削弱）。一份 YAML 声明 candidate / judges / retriever / rag_evaluator / agent_runtime / safety 全部块，`build_router` 自动点亮 generic / rag / agent evaluator + safety pipeline，单次 `run` 跑遍所有等价类。
+  - `scripts/phase12_ci_gate.py`：seed → run(baseline) → run(candidate) → `build_gate_report`，带连通性断言（每个 task_type 非 error、报告含四轴 + RAG/agent quality 子项 + safety 子项）+ elapsed 计时；`--mock` / `EVALGATE_MOCK_LLM` 两用。退出码 2=连通性坏 / 1=gate fail / 0=pass。
+  - 重写 `.github/workflows/eval-gate.yml`：删 `seed_demo.py` + fixtures，改跑 orchestrator（`EVALGATE_MOCK_LLM=1`，离线确定性、零 token），保留 artifact 上传 + github-script PR 评论 + enforce；`workflow_dispatch` 留作可切真模型入口。
+  - `make ci-gate`（mock）/ `make ci-gate-real`（本机 Ollama）。
+  - **DB 用 SQLite ephemeral**（`Base.metadata.create_all`，不跑 alembic），CI 不依赖 Postgres service，和各 phase smoke 脚本一致。
+- **退出标准达成**：`make ci-gate` mock 端到端绿（4 等价类全连通，报告四轴 + 子项齐全，~6s）；`make ci-gate-real`（qwen3.5:9b + qwen3-embedding:8b）实测 **~140s**（两轮 8 次评测），削弱版 candidate 触发 `quality` 轴 fail，归因点名 `answer_relevance` 子项 + `rag` tag。
+- **mock vs real 的刻意设计**：mock 下 baseline/candidate 同集各轴一致 → gate 必过，CI 这步是纯连通性检查；真模型下削弱 prompt 才暴露质量/安全回归（Phase 14 录屏素材）。详见 [DECISIONS.md ADR-009](../DECISIONS.md)。
+- **commit**：（待 commit）
+- **详细技术方案**：见 [docs/PHASE_12_PLAN.md](./PHASE_12_PLAN.md)。
 
 ## Phase 14 · Demo 打磨（数据 + 录屏 + 数字）   [TODO]
 
@@ -257,7 +247,6 @@ flowchart LR
     P14["P14 Demo（人工标注）"] --> P17
     P5["P5 Runner"] --> P18["P18 Shadow Mode"]
     P3["P3 OTel ingest"] --> P18
-    P13["P13 Cloud 部署"] --> P18
 
     classDef hl fill:#e7d4f7,stroke:#8a2be2,color:#3a0a5d;
     class P15,P16,P17,P18 hl;
@@ -309,7 +298,7 @@ flowchart LR
 ## Phase 18 · Shadow Mode（线上流量上做无害评测）   [TODO]
 
 - **目标**：candidate prompt 不只在 PR 上被评——**生产 X% 流量也并发跑 candidate**（结果不返给用户），同一套 4 轴聚合 → 提前发现 PR eval set 覆盖不到的 "unknown unknown"。
-- **依赖**：Phase 5（runner）+ Phase 3（trace ingest）+ Phase 13（cloud 部署，让真实生产 caller 接得上）。
+- **依赖**：Phase 5（runner）+ Phase 3（trace ingest）+ 一个公网可达的部署（轻量路径即可，让真实生产 caller 接得上）。
 - **交付**：
   - 客户端 SDK：`evalgate.shadow(primary_prompt, candidate_prompt, sample_rate=0.1)` 包一层——sample 命中时并发跑 candidate，结果**异步**推回 EvalGate；**fire-and-forget + 超时 1s 即丢**，绝不阻塞主路径。
   - Backend：`POST /v1/shadow/observe` 接收 `(primary_result, candidate_result)` 对，按 `prompt_hash` 聚合；新表 `shadow_observations` + `shadow_reports`（每小时滚动算一次 4 轴）。
@@ -323,7 +312,7 @@ flowchart LR
 
 ## 执行守则
 
-1. **不跳 phase**（仅限 Phase 0–14）。每个 phase 都有"可独立 demo"的退出标准，不要边做 phase 7 边做 phase 11。亮点 Phase 15–18 按依赖择机插入，可缓做。
+1. **核心线不跳 phase**（Phase 0–12 → 14）。每个 phase 都有"可独立 demo"的退出标准，不要边做 phase 7 边做 phase 11。亮点 Phase 15–18 按依赖择机插入，可缓做。
 2. **每个 phase 一个 PR / commit 块**。commit message 格式参照已有：`feat(scope): 一句话描述`。
 3. **每完成一个 phase**：
    - 改本文件状态为 `[DONE]`。

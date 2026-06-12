@@ -21,6 +21,7 @@
 | **ADR-006** | UI 用 Streamlit | accepted | 运维向 dashboard，省下时间投 backend |
 | **ADR-007** | 用 `uv` 管包 | accepted | 速度快、单二进制、PEP 621 兼容 |
 | **ADR-008** | LiteLLM 统一 LLM 调用 | accepted（Phase 5） | 一个接口调 100+ provider，支撑 cross-vote |
+| **ADR-009** | CI gate 跑 mock judge + ephemeral SQLite | accepted（Phase 12） | CI 离线确定性零成本，真模型走 `make ci-gate-real` |
 
 > 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
 
@@ -194,3 +195,28 @@
 **Consequences**：
 - 多一层抽象，遇到极少数 provider-specific feature（如 Anthropic 的 prompt caching）需要绕一下。
 - 依赖 LiteLLM 维护节奏 — 它非常活跃，目前不是问题。
+
+---
+
+## ADR-009 · CI gate 用 mock judge + ephemeral SQLite，真模型走显式手动入口
+
+**Date**: 2026-06-11 · **Status**: accepted（Phase 12）
+
+**Context**：Phase 12 把 CI 卡口从静态 fixtures 换成真 judge 流水线（seed reference set → run baseline prompt → run candidate prompt → diff gate）。但 GitHub Actions 上跑真 LLM 有三个坑：(1) 烧 token / 需要把 API key 放进 CI secret；(2) judge 是随机性的，PR 之间的卡口结论会抖、复现难；(3) `evalgate run` 要写库，CI 还得起一个 Postgres service。而本仓库自身的 PR 大多跟 prompt 质量无关（改文档、改 ingest 代码……），用真模型评测它们既贵又会产生无意义的"回归"噪声。
+
+**Decision**：
+- CI 的 `eval-gate` workflow 跑 `EVALGATE_MOCK_LLM=1` —— judge / candidate / ragas 全部走 LiteLLM mock，离线、确定性、零成本。
+- CI 这步的语义是**端到端连通性 smoke**：断言每个 task_type 都产出非 error record、gate 报告含四轴 + RAG/agent quality 子项 + safety 子项；mock 下 baseline/candidate 同集各轴一致 → gate 必过。
+- 真模型评测走显式手动入口：`make ci-gate-real`（本机 Ollama）或 `workflow_dispatch` 去掉 mock。
+- orchestrator（`scripts/phase12_ci_gate.py`）在 CI 用 **ephemeral SQLite**（`Base.metadata.create_all`，不跑 alembic），不依赖 Postgres service。
+
+**Rationale**：
+1. **CI 应该测"流水线没断"，不是"这个 PR 的 prompt 好不好"** —— 后者是 consumer 仓库接入 EvalGate 后、在它们自己的 prompt PR 上才有意义的判断。把两件事分开，CI 才稳。
+2. mock 确定性 = 卡口不会因 judge 抖动随机红 / 绿，团队不会因为"误 block"去关掉卡口（正是 ADR-004 想避免的失败模式）。
+3. 零 token、无需 CI secret，安全面更小。
+4. ephemeral SQLite 让 CI job 无状态、无外部依赖，和各 phase 的 smoke 脚本同构（同一套 dialect-agnostic repository 代码路径，见 ADR-002）。
+
+**Consequences**：
+- CI 不会自动抓真实质量回归 —— 那是 consumer 仓库接入后在它们的 prompt PR 上、或本仓库手动 `make ci-gate-real` 时才发生。退出标准里"改差 prompt → CI fail + 归因"是用真模型在本地复现的（实测 ~140s）。
+- mock judge 恒返 0.5，所以 CI 这步无法验证"显著性判定"本身的正确性 —— 那由 `report/significance.py` 的单测和 Phase 14 的复现实验覆盖。
+- 想在 CI 上真跑模型，需要自备 self-hosted runner + 模型，经 `workflow_dispatch` 去 mock。

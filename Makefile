@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint format db-up db-down demo-trace ui clean
+.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real clean
 
 help:  ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make \033[36m<target>\033[0m\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -46,6 +46,12 @@ demo-trace: db-up  ## End-to-end OTel demo: start API, push a trace, curl it bac
 	@curl -s http://127.0.0.1:8000/v1/traces?limit=5 | python -m json.tool
 	@kill `cat /tmp/evalgate-api.pid` 2>/dev/null || true
 	@rm -f /tmp/evalgate-api.pid
+
+ci-gate:  ## Phase 12 end-to-end gate in mock mode (offline, deterministic, what CI runs)
+	EVALGATE_MOCK_LLM=1 PYTHONPATH='src:.' uv run python scripts/phase12_ci_gate.py --out gate-report.json
+
+ci-gate-real:  ## Phase 12 end-to-end gate against local Ollama (needs qwen3.5:9b + qwen3-embedding:8b)
+	PYTHONPATH='src:.' uv run python scripts/phase12_ci_gate.py --out gate-report.json
 
 ui:  ## Start the streamlit ops UI on http://127.0.0.1:8501 (talks to evalgate-api over HTTP)
 	uv run streamlit run src/evalgate/ui/Home.py \

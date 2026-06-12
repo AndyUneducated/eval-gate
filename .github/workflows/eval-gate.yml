@@ -29,17 +29,21 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Seed demo eval data
-        run: uv run python scripts/seed_demo.py
-
-      - name: Run multi-axis gate
+      # Phase 12: real judge pipeline (seed mixed reference set -> run baseline
+      # prompt -> run candidate prompt -> diff). Runs with EVALGATE_MOCK_LLM=1
+      # so CI stays offline and deterministic (no token cost). The candidate
+      # prompt only regresses against a real model, so the mock gate passes —
+      # this step is the end-to-end plumbing check. Flip to a real model by
+      # dropping EVALGATE_MOCK_LLM (e.g. via workflow_dispatch on a self-hosted
+      # runner with Ollama).
+      - name: Run multi-axis gate (real judge, mock LLM)
         id: gate
         continue-on-error: true
+        env:
+          EVALGATE_MOCK_LLM: "1"
+          PYTHONPATH: "src:."
         run: |
-          uv run evalgate gate \
-            --baseline examples/fixtures/baseline.json \
-            --candidate examples/fixtures/candidate.json \
-            --out gate-report.json
+          uv run python scripts/phase12_ci_gate.py --out gate-report.json
 
       - name: Upload gate report
         uses: actions/upload-artifact@v4

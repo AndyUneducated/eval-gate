@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-06-11 · Phase 12 · 真实 CI Gate 端到端（替换 fixtures）
+
+把 `eval-gate` workflow 从"seed 假 fixtures → `evalgate gate`"换成一条真 judge 流水线：seed 一个混合 reference set → 用 baseline prompt 跑一遍 judge → 用 candidate prompt 跑一遍 → diff 出四维报告。关键洞察是**一份 prompt YAML 能覆盖全部任务等价类**——`build_router` 按 YAML 里有没有 `retriever`/`rag_evaluator`/`agent_runtime` 块自动注册 generic / rag / agent evaluator，`safety` 块对所有 case 追加安全子轴。所以新建的 [`examples/ci_demo`](examples/ci_demo) 只用一个集（2 generic 含 PII+jailbreak / 1 rag / 1 agent，input 统一 `question` 键）+ 两份只差 `candidate.system` 的 committed prompt，单次 `run` 就把四条 evaluator 分支 + safety pipeline 全趟一遍。整条编排落在 [`scripts/phase12_ci_gate.py`](scripts/phase12_ci_gate.py)，CI 这步几乎是接线而非写新算法。
+
+**mock vs real 的刻意分工**：CI 跑 `EVALGATE_MOCK_LLM=1`——离线、确定性、零 token。mock 下 pointwise judge 恒返 0.5，baseline / candidate 在同一个集上各轴完全一致 → gate 必过，所以 CI 这步本质是**端到端连通性检查**（断言每个 task_type 都产出非 error record、报告含四轴 + RAG/agent quality 子项 + safety 子项），不是抓回归。真信号留给 `make ci-gate-real`：真模型下削弱版 candidate 才会暴露质量/安全退步。这避免了 CI 烧钱、也避免拿一个本仓库无关的 PR 当"回归"误 block。
+
+**DB 用 SQLite ephemeral**（`Base.metadata.create_all`，不跑 alembic），沿用各 phase smoke 脚本的套路，CI 不必起 Postgres service，本机/CI 行为一致。
+
+**实测数字**：`make ci-gate` mock 端到端 ~6s 绿；`make ci-gate-real`（本机 Ollama，qwen3.5:9b 候选+裁判 / qwen3-embedding:8b 检索+ragas）一次 baseline+candidate 两轮共 8 次评测 **~140s**（远低于 5min 预算），削弱版 candidate 触发 `quality` 轴 fail，summary 点名 `answer_relevance` 子项 delta=-0.127 + 最差 tag `rag`——正是 Phase 14 录屏要的"改差 prompt → CI 红 + 归因到位"画面。
+
+**一个 surprise（值得记）**：实现时我一度把 example/test 里的 `ollama/qwen3.5:9b` 当成"不存在的占位 tag"想换成 `qwen2.5:7b`，还顺手翻转了 [`tests/test_no_legacy_models.py`](tests/test_no_legacy_models.py) 这个守卫。跑真实验证时 `ollama list` 才发现本机装的恰恰是 `qwen3.5:9b` / `qwen3.6:27b` / `qwen3-embedding:8b`（自定义本地 tag），仓库约定和守卫一直是对的。全部回滚，只保留 Phase 12 真正的新增物，ci_demo 用本机已装的 `qwen3.5:9b` + `qwen3-embedding:8b`。教训：改"看起来是死配置"的东西前，先核对运行环境的事实（`ollama list`）。
+
+**关键技术语言**：git-native prompt management · single-YAML multi-evaluator routing · offline-deterministic CI gate（mock judge）with a real-model escape hatch · end-to-end connectivity smoke as a CI gate。
+
 ## 2026-05-31 · 收尾 · 下线 `eval_results.safety_violation` 列（migration 0011）
 
 一次小而干净的 schema 收尾：把 `eval_results.safety_violation` 布尔列彻底删除（[migration 0011](src/evalgate/db/migrations/versions/0011_drop_safety_violation.py)，可逆 downgrade）。

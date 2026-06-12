@@ -76,8 +76,8 @@ safety 轴的 4 个子维度（sub-metric）：`pii_input_rate`（输入含 PII�
 回归会按 `tag` / `intent` 做归因（attribution），因此报告写的是
 *"billing intent 掉了 8 个点"*，而不是 *"pass rate 掉了 0.5%"*。
 
-> **状态**：Phase 0–11 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通（CI 卡口当前仍由 fixtures 驱动）。
-> 下一步（Phase 12）把 CI 里的 fixtures 换成真实 judge 的输出，详见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
+> **状态**：Phase 0–12 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通，**CI 卡口已从 fixtures 切到真 judge 流水线**（Phase 12）。
+> 详见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 架构总览
 
@@ -146,11 +146,31 @@ uv run evalgate gate \
 # exit 0 = 卡口通过，exit 1 = 检测到回归（CI 会用这个返回码）
 ```
 
-## CI 卡口
+## CI 卡口（Phase 12 · 真 judge 端到端）
 
-`eval-gate` workflow 会在每个 PR 上跑：先 seed demo eval 记录，调用 `evalgate gate`，把 JSON 报告作为
-artifact 上传，在 PR 上发四维度的归因表评论，任何一个维度出现"统计显著的回归"就让这次 check 失败。
-把 seed 的 fixtures 换成你自己 baseline / candidate eval 输出，就能把卡口接到你自己的 pipeline 上。
+`eval-gate` workflow 在每个 PR 上跑的不再是静态 fixtures，而是一条真 judge 流水线
+（[`scripts/phase12_ci_gate.py`](scripts/phase12_ci_gate.py)）：
+
+1. seed 一个混合 reference eval set（[`examples/ci_demo`](examples/ci_demo)：generic + rag + agent +
+   safety 一个集里全覆盖）；
+2. 用 **main 分支的 prompt**（`prompts/baseline.yaml`）跑一遍 judge；
+3. 用 **PR 分支的 prompt**（`prompts/candidate.yaml`）跑一遍 judge；
+4. 两组 records 过 `build_gate_report` → 四维报告 + RAG/agent 的 quality 子项 + safety 子项 + tag 归因。
+
+prompt 以 YAML 维护、commit 在仓库里（git-native prompt 管理）。CI 跑 `EVALGATE_MOCK_LLM=1`
+——离线、确定性、零 token 成本：mock 下 baseline / candidate 在同一个集上各轴一致，gate 通过，所以
+CI 这步是一条**端到端连通性检查**（每个 task type 都产出非 error record、报告含全部四轴 + 子项）。
+
+本地想看真模型下的真信号（削弱版 candidate 触发回归）：
+
+```bash
+make ci-gate        # mock，等价于 CI 跑的
+make ci-gate-real   # 真模型，需要本机 Ollama 装好 qwen3.5:9b + qwen3-embedding:8b
+```
+
+`make ci-gate-real` 会在削弱版 candidate 上让 gate **FAIL** 并在归因里点名是哪个 tag / 哪个 RAG 子项退步
+（实测一次 baseline+candidate 两轮共 8 次评测，端到端约 **140s**）。把 `examples/ci_demo` 换成你自己的
+consumer app + prompt，就能把卡口接到你自己的 pipeline 上。
 
 ## 开发
 
