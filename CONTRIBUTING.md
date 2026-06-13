@@ -53,10 +53,9 @@ uv run alembic revision --autogenerate -m "<msg>"
 
 ## 4. 文档约定
 
-- **关键技术决策**写到 [`DECISIONS.md`](DECISIONS.md)，按 ADR 风格追加。
-- **已上线阶段**写到 [`JOURNAL.md`](JOURNAL.md)，每个阶段一段话。
+- **关键技术决策**写到 [`DECISIONS.md`](DECISIONS.md)，按 ADR（Architecture Decision Record，架构决策记录）风格追加。
 - **产品级改动**（新增维度、改变 API 表面）写到 [`docs/design.md`](docs/design.md)。
-- **roadmap 状态**更新 [`docs/ROADMAP.md`](docs/ROADMAP.md) 的 `[DONE]` / `[NEXT]` / `[TODO]`。
+- **某个能力的技术方案**写到 [`docs/`](docs/) 下对应的 `PHASE_*_PLAN.md`（含图解 + 选型抉择）。
 
 ## 5. Commit 信息
 

@@ -1,8 +1,8 @@
 # EvalGate · Design Spec
 
-> **作用**：本项目长期的产品定义 + 技术选型 + 架构 + 关键 trade-off 的**唯一来源真理（source of truth）**。
+> **作用**：本项目长期的产品定义 + 技术选型 + 架构 + 关键 trade-off（权衡取舍）的**唯一信息源（source of truth）**。
 >
-> 一切未来的 vibe coding 都参照本文档执行；执行节奏见 [`ROADMAP.md`](./ROADMAP.md)；每次重大技术抉择写入根目录 [`DECISIONS.md`](../DECISIONS.md)；每个里程碑完成后写入根目录 [`JOURNAL.md`](../JOURNAL.md)。
+> 各能力的详细技术方案见 [`docs/`](.) 下对应的 `PHASE_*_PLAN.md`；每次重大技术抉择写入根目录 [`DECISIONS.md`](../DECISIONS.md)（ADR 风格）。
 >
 > **内部代号**：EvalGate（仅用于设计文档与对话；简历不出现此名，使用 "评测优先 LLMOps · Eval-First LLMOps with CI Gate" 作为项目标题）。
 >

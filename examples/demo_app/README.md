@@ -21,6 +21,6 @@ uv run python -m examples.demo_app.pipeline
 curl -s http://localhost:8000/v1/traces?limit=5 | python -m json.tool
 ```
 
-## Phase 5 follow-up
+## Real-model run
 
-When the real judge runner lands, just drop `mock_response=` and pass `OPENAI_API_KEY` — the instrumentation around the call stays unchanged.
+To exercise a real provider instead of the mock, drop `mock_response=` and pass an API key (e.g. `OPENAI_API_KEY`) — the OTel instrumentation around the call stays unchanged.
