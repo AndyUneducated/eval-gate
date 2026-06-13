@@ -48,6 +48,23 @@ class Settings(BaseSettings):
         validation_alias="EVALGATE_SHADOW_WEBHOOK_URL",
     )
 
+    # Phase 14 Adversarial Synth: the cheap generator model the red-team
+    # synthesizer uses to author tricky cases. Defaults to the same small model
+    # the badcase finder uses; overridable via env or CLI ``--model``.
+    adversarial_generator_model: str = Field(
+        default="ollama/qwen3.5:9b",
+        validation_alias="EVALGATE_ADVERSARIAL_GENERATOR_MODEL",
+    )
+
+    # Phase 16 Judge Calibration: where the fitted temperature-scaling params
+    # live on disk. ``evalgate calibration fit`` writes it; ``report`` and the
+    # badcase ``--calibration`` path read it. Raw scores stay immutable in the
+    # DB — calibration is applied read-time from this file.
+    calibration_params_path: str = Field(
+        default="calibration_params.json",
+        validation_alias="EVALGATE_CALIBRATION_PARAMS_PATH",
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

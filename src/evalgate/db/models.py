@@ -101,6 +101,12 @@ class EvalCaseRow(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     task_type: Mapped[str] = mapped_column(String, nullable=False, default="generic")
+    # Phase 14: review lifecycle (pending/active/archived) + provenance
+    # (trace/manual/adversarial). The runner only ever loads ``active`` cases,
+    # so a freshly synthesized adversarial case (``pending``) can't leak into a
+    # gate run before a human approves it.
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", index=True)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="manual")
     input: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
     expected: Mapped[dict[str, Any] | None] = mapped_column(JsonType, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JsonType, default=list, nullable=False)
@@ -322,6 +328,28 @@ class ShadowReportRow(Base):
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     report: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict, nullable=False)
     alerted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HumanLabelRow(Base):
+    """Phase 16: a human good/bad verdict on a judged result.
+
+    ``eval_result_id`` is a *soft* reference (no FK) — labels must survive
+    result/run deletion, mirroring ``EvalResultRow.eval_case_id``. The fitted
+    calibration curve pairs ``eval_results.score`` (judge confidence) with these
+    labels (good=1 / bad=0); the same table is the intended Phase 17 Cohen's
+    kappa source (judge vs human agreement).
+    """
+
+    __tablename__ = "human_labels"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    eval_result_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    annotator: Mapped[str] = mapped_column(String, nullable=False, default="human")
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
