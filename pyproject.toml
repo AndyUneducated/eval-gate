@@ -24,6 +24,7 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.13",
     "numpy>=2.1",
+    "matplotlib>=3.9",
     "opentelemetry-proto>=1.30",
     "protobuf>=5",
     "litellm>=1.60",

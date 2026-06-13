@@ -8,6 +8,56 @@
 
 ---
 
+## 2026-06-12 · Phase 16 Judge Calibration（ECE + temperature scaling）
+
+落地亮点线第四站：让 judge 的 `score` 真有概率意义——judge 说 0.8，就该约等于"人类有 80% 概率判这条 good"。这是给项目加的一张"ML / 研究深度"牌（Expected Calibration Error + temperature scaling + reliability diagram，引 Guo et al. 2017）。
+
+**校准对象是 `score`，不是启发式 `judge_confidence`。** 今天的 `judge_confidence` 只是个方差代理、不是概率；目标针对的是 score。用单参数 **temperature scaling**：`p = sigmoid(logit(score)/T)`。`T>1` 说明 judge 过自信（把分往 0.5 拉）。拟合以 `w=1/T` 为变量最小化逻辑 NLL——单特征无截距的逻辑回归，对 `w` **严格凸**，所以一维 **golden-section** 搜索即全局最优；环境只有 numpy（无 scipy/sklearn），NLL 用 `logaddexp` 稳定 softplus、`logit` 带 eps 截断。守卫：标签需同时含两类且 n≥10，否则返回 T=1（不够信号不动）。
+
+**两个与用户对齐的设计决策**：① 人工标签存进**新 `human_labels` 表**（migration 0014，软引用 `eval_result_id`），可 join `eval_results`、可查询、与既有持久化范式一致——它同时是 Phase 17 Cohen's κ 的数据源；② 校准在**读取时**由纯 `Calibrator` 施加，`eval_results` 原始 `score`/`judge_confidence` 保持不可变，不改 runner、不加结果列（延续 Phase 14/15 "存原始、读时变换"）。
+
+**分层沿用既有约定**：[report/calibration.py](src/evalgate/report/calibration.py) 纯统计引擎（ECE/MCE、reliability_curve、fit_temperature、`Calibrator`、`render_reliability_png` 懒加载 matplotlib），无 DB/LLM、可被单测与 smoke 直接复用；新建 `evalgate.calibration` 包负责编排（标签存储 + join 取分 + 拟合落盘 + 读盘）。BadCase `find_uncertainty(calibrator=)` opt-in 切到**校准后不确定度**（`1-|2p-1|`，在判定边界 p=0.5 处最大）。
+
+**一个诚实的统计注脚**：temperature scaling 是**单调**变换，不会重排 `|score-0.5|`；它对 badcase 的价值在于**替换掉**今天那个与真实模糊度不相关的 `judge_confidence` 启发式排序——而非重排原始分数。所以 smoke / 单测的召回对比都是"校准后不确定度 vs 启发式 confidence"，而不是 vs `|score-0.5|`。
+
+**smoke 同款离线合成取舍**：mock judge 恒返 0.5（零信息），校准 demo 跑不了，所以走 seeded 过自信合成对——ECE 0.165→0.029、拟合 T≈3.6、出 reliability png、校准后边界 case 召回从 18% 提到 100%。
+
+**测试**：新增 5 个文件（stats 退出标准、repository、badcase 召回、CLI label→fit→report+plot、migration 0014 round-trip），phase16 smoke 进 `test_smokes.py` 的 CI mock 矩阵。新增 matplotlib 依赖。全量绿、lint/format 通过。
+
+---
+
+## 2026-06-12 · Phase 15 Sequential Gate（边跑边判，省 judge 调用）
+
+落地亮点线第三站：CI gate 不再"跑满 N 才下结论"，而是流式接候选分数、每 `look_every` 条 case 看一眼——证据足够坏立即 FAIL、足够好立即 PASS，跳过剩余那些贵的 judge 调用，同时把累积误判率锁在 α=0.05。这是给项目加的一张"统计深度"牌。
+
+**核心形状 = 一个 paired group-sequential 检验。** baseline 与 candidate 跑同一组有序 case，于是按 `case_id` 配对、对每条差值 `d_i = cand - base` 做检验——比固定-N gate 的双样本 bootstrap 更有功效。把配对 t 统计量换到 B-value 尺度 `B(t)=Z·√t`，在 H0 下就是带独立增量的布朗运动，正好喂给边界递归。**提前 FAIL** 用 Lan-DeMets **α-spending**（`obf`/`pocock` 两个花费函数），用 Armitage-McPherson-Rowe 网格递归（numpy 卷积 + cumsum 定位）求"前面都没越界、这一看恰好花掉增量 α"的下边界。**提前 PASS** 用 **stochastic curtailment**：当"在最坏可容忍回归 drift 下到 t=1 还能越界"的条件功效 < γ 时判 futile → PASS——curtailment 只缩短运行、永不造成 FAIL，所以 Type-I 完全不受影响（这是选它而非 beta-spending 的关键）。只有 numpy，所以 `norm_cdf` 用 `math.erf`、`norm_ppf` 用 Acklam 有理逼近自实现。
+
+**分层沿用既有约定**：[report/sequential.py](src/evalgate/report/sequential.py) 纯统计引擎（spending / 边界递归 / 条件功效 / 有状态 `SequentialGate` / 纯回放 `evaluate_sequential`），无 DB/LLM、可被 Monte Carlo 与 smoke 直接复用；[gate/sequential.py](src/evalgate/gate/sequential.py) 负责编排——载 baseline、驱动 `iter_eval`、越界即 break（真正省调用）、停止点拼 `GateReport`。**只对 quality 一个轴做 sequential**（每次 judge 调用驱动它），cost/latency/safety 很便宜，在停止点对已消费 case 做一次固定-N 快照（复用 `build_gate_report`），quality 轴判定由 sequential 覆盖（权威）。无 migration——baseline 直接复用既有 `eval_results`。
+
+**统计严谨性靠 Monte Carlo 兜底（退出标准）**：1000 次/场景断言——无 drift 时累积 false-fail ≈ 0.05（OBF look_every=5 实测 ~0.05）；drift ≤ -mde 时 power ≥ 0.8 且省调用 ≥ 50%；干净候选 ≥90% 提前 PASS、省调用 ≥ 50%。一个**诚实的小样本注脚**：Pocock 把 α 前置到最早几次 look，而 n=5 时正态近似对 t 统计量略偏激进（实测 ~0.08），所以默认推荐 OBF（早期几乎不花、稳在 0.05），Pocock 的 Type-I 测试用更现实的 look 间隔（首看 n=10）。
+
+**smoke 也有 Phase 14 同款诚实取舍**：mock judge 恒返 0.5 → 零方差，统计 demo 跑不了，所以 phase15 smoke 走**离线合成**（seeded 正态：回归候选提前 FAIL ~75% 省调用、干净候选提前 PASS ~58% 省调用），而非走 mock LLM。
+
+**测试**：新增 5 个文件（spending/边界/正态 round-trip、判定逻辑、Monte Carlo、runner+CLI 端到端），phase15 smoke 进 `test_smokes.py` 的 CI mock 矩阵。全量绿、lint/format 通过。
+
+---
+
+## 2026-06-12 · Phase 14 Adversarial Case Synth（红队自动出题 · 闭环飞轮）
+
+落地亮点线第二站：generator-LLM 给最弱 tag 自动出"刁钻 case"，经人审才进 eval set，形成 "评测 → 找弱点 → 自动出题 → 人审 → 再评测" 的闭环。
+
+**核心形状 = 给 eval case 加一个生命周期。** 新增 `eval_cases.status`（pending/active/archived）+ `source`（trace/manual/adversarial）两列（migration 0013，含 `source='trace'` 回填）。整个"pending 永不入 gate"的安全属性**只靠一处实现**：把 `eval_set.repository.list_cases` 的签名重构成带 `statuses` 过滤、**默认 `("active",)`**。runner（`iter_eval` 调 `list_cases`）一行不改就自动排除待审/已归档 case；detail / CLI show 显式传 `statuses=None` 看全量。这是"不在调用方加特判、把不变量沉到单一数据访问层"的典型——未来任何走 `list_cases` 的消费方都白嫖该保证。无向后兼容包袱，直接改签名。
+
+**新增 `evalgate.adversarial` 包**：`synth.py` 纯生成（4 模板：边界值 / 歧义指代 / prompt injection（复用 `DEFAULT_JAILBREAK_KEYWORDS`）/ role confusion；一次 strict-JSON 调 `acompletion_json`，容错解析，**永不抛错**，mock 按模板确定性产 case 离线可跑）；`repository.py` 生命周期（`generate_into_set` 取最弱 exemplar→生成→落 pending；`review_case` approve/reject；`stats` 命中率）。配 REST 四端点 + `evalgate adversarial` 三子命令 + cheap-model 默认配置。
+
+**两个已与用户对齐的设计决策**：① hit = **绝对阈值**（candidate 最新得分 `< 0.5`），不依赖某个 baseline run 的选取，跨 run 可比；② adversarial case **reference-free**（不生成 gold），红队价值在暴露弱点而非给标准答案，也省掉二次人审 gold 的成本。
+
+**mock smoke 的一个诚实取舍**：mock pointwise judge 恒返 0.5，所以"quality 得分 < 0.5"在 mock 下天然不成立。于是 phase14 smoke 的**确定性头号断言**改用 **safety 轴回归**——审入的注入 case 给 candidate 引入 baseline 没有的 `jailbreak_attempt` 攻击面（per-record 即可判定，不靠 bootstrap 显著性），gate fail；"得分 < 0.5 的真 hit"留给真模式（`EVALGATE_MOCK_LLM=0`）断言，hit>0 路径由单测直接喂低分结果覆盖。smoke 还顺手验证了核心不变量：generate 后再跑一次 run，0 条 pending case 泄漏。
+
+**测试**：新增 34 个（synth / repository（含 runner-excludes-pending）/ endpoint / cli / migration 0013 round-trip / list_cases 状态过滤），phase14 smoke 进 `test_smokes.py` 的 CI mock 矩阵。全量绿、lint/format 通过。
+
+---
+
 ## 2026-06-12 · 工程问题修复（gate 显著性统一 + smoke 治理）+ 真模型复验
 
 把上一条采集中暴露的 6 个工程问题（与模型能力无关）一次性修掉，原则是**设计整洁 / 面向后续 phase 可适配 > 向后兼容**，必要处直接重构。

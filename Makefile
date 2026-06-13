@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke clean
+.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke adversarial-smoke sequential-smoke calibration-smoke clean
 
 help:  ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make \033[36m<target>\033[0m\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -55,6 +55,15 @@ ci-gate-real:  ## Phase 12 end-to-end gate against local Ollama (needs qwen3.5:9
 
 shadow-smoke:  ## Phase 13 shadow mode end-to-end (offline: 1k traffic -> rolling report -> alert)
 	PYTHONPATH='src:.' uv run python scripts/phase13_shadow_smoke.py
+
+adversarial-smoke:  ## Phase 14 adversarial synth end-to-end (offline: generate -> review -> gate)
+	EVALGATE_MOCK_LLM=1 PYTHONPATH='src:.' uv run python scripts/phase14_adversarial_smoke.py
+
+sequential-smoke:  ## Phase 15 sequential gate (offline synthetic: early FAIL + early PASS)
+	PYTHONPATH='src:.' uv run python scripts/phase15_sequential_smoke.py
+
+calibration-smoke:  ## Phase 16 judge calibration (offline synthetic: ECE drop + temperature)
+	PYTHONPATH='src:.' uv run python scripts/phase16_calibration_smoke.py
 
 ui:  ## Start the streamlit ops UI on http://127.0.0.1:8501 (talks to evalgate-api over HTTP)
 	uv run streamlit run src/evalgate/ui/Home.py \

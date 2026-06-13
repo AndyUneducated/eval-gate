@@ -23,6 +23,9 @@
 | **ADR-008** | LiteLLM 统一 LLM 调用 | accepted（Phase 5） | 一个接口调 100+ provider，支撑 cross-vote |
 | **ADR-009** | CI gate 跑 mock judge + ephemeral SQLite | accepted（Phase 12） | CI 离线确定性零成本，真模型走 `make ci-gate-real` |
 | **ADR-010** | Shadow Mode：SDK 侧打分 + on-demand rollup | accepted（Phase 13） | 后端保持薄层，复用 `EvalRecord` + `build_gate_report`，不背 scheduler 依赖 |
+| **ADR-011** | Case status/source 生命周期 + reference-free 对抗出题 | accepted（Phase 14） | pending 永不入 gate 只靠 `list_cases` 默认 active-only；hit=绝对阈值；红队 case 无 gold |
+| **ADR-012** | Sequential gate：paired 序贯检验 + α-spending / curtailment、仅 quality | accepted（Phase 15） | early-FAIL 用 Lan-DeMets α-spending、early-PASS 用 stochastic curtailment；只对 quality 序贯、其余固定-N 快照；sequential 判定权威 |
+| **ADR-013** | Judge Calibration：校准 score（非 confidence）+ DB 人标表 + 读时 Calibrator | accepted（Phase 16） | 用 temperature scaling 把 `score` 变真概率；人标存 `human_labels` 表（P17 κ 复用）；读时变换保持 `eval_results` 不可变 |
 
 > 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
 
@@ -246,3 +249,82 @@
 - SDK 把 LiteLLM judge 调用带进了调用方进程：成本/延迟落在后台 task（不阻塞主路径），但确实是调用方在掏这次 judge 的 token。
 - 后台 task 需要强引用集合（`_BACKGROUND_TASKS`）防 GC——这是 asyncio fire-and-forget 的已知坑，已封装。
 - 报警是自建的 Slack 兼容 webhook（`{"text": ...}` + 无 URL 时降级日志），没有引入 Slack SDK；未来要富文本 / 多通道再扩。
+
+---
+
+## ADR-011 · Case 生命周期（status/source）放数据访问层 + 对抗出题 reference-free + hit 用绝对阈值
+
+**Date**: 2026-06-12 · **Status**: accepted（Phase 14）
+
+**Context**：Phase 14 红队自动出题要把 generator-LLM 产的 case 喂进 eval set，但**绝不能让未经人审的 case 进 gate**（否则飞轮会自己污染自己）。三个设计岔路：(1) "pending case 不参与评测"这条安全不变量在哪实现？runner 里加判断，还是更底层？(2) 对抗 case 要不要也生成 gold `expected`？(3) "命中（candidate 被难住了）"怎么定义——相对降幅还是绝对阈值？
+
+**Decision**：
+- **给 `EvalCaseRow` 加 `status`（pending/active/archived）+ `source`（trace/manual/adversarial）两列，安全不变量沉到数据访问层**：把 `eval_set.repository.list_cases` 重构成带 `statuses` 过滤、**默认 `("active",)`**。runner / gate 经 `list_cases` 读 case，因此一行不改就只看到 active；展示类路径（GET 详情 / CLI show）显式传 `statuses=None`。
+- **对抗 case 是 reference-free**：只生成 `input`，不生成 gold `expected`，judge 以 reference-free pointwise 打分。
+- **hit = 绝对阈值**：candidate 最新得分 `< 0.5`（`stats --threshold` 可调），不用"相对某 baseline 降 ≥ X"。
+
+**Rationale**：
+1. **不变量沉到单一数据层 > 在每个调用方加特判**：runner、未来的 sequential gate、任何走 `list_cases` 的消费方都自动获得"pending 不入 gate"保证，不会有人忘记加判断。把规则放在数据最窄的入口是最稳的。
+2. **`source` 让来源可观测**：trace/manual/adversarial 三态让 attribution 和后续分析能区分"人写的"vs"红队出的"vs"线上捞的"；migration 回填 `source='trace'` 保留历史。
+3. **reference-free 省二次人审、且贴合红队本质**：红队价值在"暴露弱点"，不在"给标准答案"。若连 gold 一起生成，gold 本身又得人审一遍（LLM 生成的答案不可信），ROI 为负。judge 走已有的 reference-free pointwise 路径，零新代码。
+4. **绝对阈值跨 run 可比、无 baseline 选取偏差**：相对降幅要先定一个"基线 run"，而基线选谁本身就是噪声源；绝对阈值语义稳定、一眼可解释（"得分低于 0.5 就算被难住"）。
+5. **无向后兼容包袱**：项目处于建设期，直接改 `list_cases` 签名比加一个并行函数干净（呼应"设计整洁 > 向后兼容"的本轮原则）。
+
+**Consequences**：
+- `list_cases` 签名变了（加 `statuses` keyword）：所有调用点要么吃默认 active-only（runner / gate / 大多数），要么显式 `None`（展示类）——已全量审过。
+- mock judge 恒返 0.5，使"得分 < 0.5"在 mock 下天然不触发：phase14 smoke 的确定性头号断言因此改用 **safety 轴回归**（审入的注入 case 给 candidate 引入攻击面），真 hit 留给真模式 + 单测覆盖。这是 mock 评分扁平化的已知代价。
+- 绝对阈值 0.5 是个 magic number：不同任务的"难住"标准可能不同，故做成 `--threshold` 可调，但默认值的合理性依赖 judge 校准（Phase 16 若做 calibration 可再回看）。
+- 生成全程 best-effort（synth 永不抛错 → 可能产出少于 k 条）：换来"红队出题不打断飞轮"，但调用方要容忍"要 10 条可能只回 7 条"。
+
+---
+
+## ADR-012 · Sequential gate：paired 序贯检验 + α-spending（早停 FAIL）/ stochastic curtailment（早停 PASS）、仅对 quality 轴
+
+**Date**: 2026-06-12 · **Status**: accepted（Phase 15）
+
+**Context**：固定-N gate 必须把全部 N 条 case 判完才出结论，judge 调用贵且很多 PR 的好/坏其实"中途就明显了"。要做"边跑边判、证据足够就提前停"，有几个设计岔路：(1) 用什么检验——沿用固定-N 的双样本 bootstrap，还是换配对检验？(2) early-FAIL 边界怎么定才不抬高累积误判率？(3) early-PASS 用什么机制（beta-spending / 简单启发式 / stochastic curtailment）？(4) 序贯决策覆盖哪些轴？
+
+**Decision**：
+- **paired 参数检验**：baseline 与 candidate 跑同一组有序 case，按 `case_id` 配对、对差值 `d_i` 做单边检验；统计量换到 B-value 尺度（H0 下为独立增量布朗运动）。
+- **early-FAIL 用 Lan-DeMets α-spending**（`obf` 默认 / `pocock`），Armitage-McPherson-Rowe 网格递归求下边界，累积 α=0.05。
+- **early-PASS 用 stochastic curtailment**：条件功效（在最坏可容忍回归 drift 下到 t=1 还能越界的概率）< γ → futile → PASS。
+- **只对 quality 轴序贯**；cost/latency/safety 在停止点对已消费 case 做固定-N 快照，quality 轴判定由 sequential 覆盖（权威），`passed = sequential==PASS ∧ 非 quality 轴全过`。
+- 自实现 `norm_cdf`（`math.erf`）/ `norm_ppf`（Acklam）——环境只有 numpy、无 scipy。
+
+**Rationale**：
+1. **配对比双样本更有功效，且天然增量**：同一组 case 一一对应，配对消掉 case 难度方差；配对 t 统计量的布朗运动近似满足"每来一条独立更新"，而 bootstrap 既不增量也不利用配对——序贯场景下配对参数检验是对的工具。
+2. **α-spending 是序贯多看不抬 Type-I 的标准答案**：每次 look 只花掉预算的一小片增量 α，累积恰好 0.05；OBF 早期几乎不花（最严、最稳），Pocock 花得更匀（早期略激进）。
+3. **curtailment 比 beta-spending 干净**：curtailment 只会"缩短"运行、永远不会触发 FAIL，所以 Type-I 完全不受 PASS 边界影响——把"省调用"和"误判控制"两件事解耦；beta-spending 会与 α 边界耦合、实现与论证都更重。
+4. **只序贯 quality 是成本与价值的最优点**：每次 judge 调用驱动的就是 quality 分数，省调用的杠杆全在这里；cost/latency/safety 计算便宜，不值得为其做序贯，停止点快照即可，且复用既有 `build_gate_report` 保证数字与固定-N gate 一致。
+
+**Consequences**：
+- 退出标准靠 Monte Carlo 证明（1000 次/场景）：Type-I ≤ ~0.05、power ≥ 0.8、省调用 ≥ 50%——这些是 load-bearing 测试，不是装饰。
+- **小样本注脚**：正态近似对小 n 的 t 统计量略激进，Pocock 把 α 前置到最早几次 look，n=5 时实测 Type-I ~0.08（略超 0.05）；故默认推荐 OBF，Pocock 的 Type-I 测试用首看 n=10 的现实间隔。这是"用正态边界近似 t 分布"的已知代价。
+- mock judge 恒返 0.5（零方差）使统计 demo 跑不了：phase15 smoke 改走**离线合成**（seeded 正态）而非 mock LLM——与 Phase 14 同款诚实取舍。
+- 无 migration（baseline 复用既有 `eval_results`），但要求 baseline 与 candidate 跑的是同一 eval set 的同一批 case；缺 baseline 分数的 case 不参与配对（被静默排除）。
+
+---
+
+## ADR-013 · Judge Calibration：校准 `score`（而非 `judge_confidence`）+ 人标存 DB 表 + 读时 Calibrator
+
+**Date**: 2026-06-12 · **Status**: accepted（Phase 16）
+
+**Context**：希望 judge 的输出"能当概率读"——judge 说 0.8 就该约等于 80% 人工通过率。三个设计岔路：(1) 校准哪个量——`score` 还是启发式 `judge_confidence`？(2) 人工标签（ground truth）存哪——JSON 文件还是 DB 表？(3) 校准在何处施加——eval 时持久化 calibrated score，还是读时变换？
+
+**Decision**：
+- **校准 `score`**：用单参数 temperature scaling `p = sigmoid(logit(score)/T)`，以 `w=1/T` 为变量最小化逻辑 NLL（凸、golden-section 求解，无 scipy/sklearn）。不校准 `judge_confidence`。
+- **人标存新 `human_labels` 表**（migration 0014，软引用 `eval_result_id`，无 FK），而非 JSON 文件。
+- **读时施加**：纯 `Calibrator` 从 `calibration_params.json` 读 T，对原始分数做变换；`eval_results` 的 `score`/`judge_confidence` 保持不可变，不改 runner、不加结果列。
+
+**Rationale**：
+1. **`score` 才是目标信号**：`judge_confidence`（[multi_judge.py](src/evalgate/judge/multi_judge.py) L68-74）只是个启发式方差代理、本就不声称是概率；"judge 说 0.8 = 80% 通过率"针对的是 score。校准一个本不是概率的量没有意义。
+2. **DB 表 > JSON 文件**：人标能 join `eval_results`、按 run 过滤、可查询，与既有持久化范式一致；更关键的是它**同时是 Phase 17 Cohen's κ（judge vs 人工一致性）的数据源**——一张表喂两个 phase，避免重复造标注存储。软引用（无 FK）让标签在结果/run 删除后存活，沿用 `eval_results.eval_case_id` 的惯例。
+3. **读时变换 > eval 时持久化**：延续 Phase 14/15 "存原始、读时变换"的原则——原始分数不可变，校准曲线随时可重拟合 / 替换而无需重跑 judge；runner 零改动；不引入"哪个是原始分、哪个是校准分"的列歧义。
+4. **temperature scaling 而非 Platt/isotonic**：单参数、凸、需要的标注量最小，是 reliability 校准的标准基线（Guo et al. 2017），契合"人工标注很贵、能少则少"。
+
+**Consequences**：
+- temperature scaling 是**单调**变换：它不会重排 `|score-0.5|`，所以对 BadCase 的价值在于**替换掉** `judge_confidence` 启发式排序（与真实模糊度不相关），而非重排原始分数。badcase 召回对比因此是"校准后不确定度 vs 启发式 confidence"。这是个容易被误读的点，已在 plan / smoke 注明。
+- 需要人工标注闭环（`calibration label`）才能拟合；标注退化（单类 / n<10）时 `fit_temperature` 退回 T=1（恒等），CLI 退出码 2。
+- 当前是**单一全局 T**；params JSON 形状预留了 per-task-type / per-judge 多曲线的扩展空间，但未实现。
+- 新增 matplotlib 依赖（仅 reliability diagram，Agg 懒加载，纯统计路径不触发）。
+- mock judge 恒返 0.5（零信息）使校准 demo 跑不了：phase16 smoke 改走**离线合成**过自信对——与 Phase 14/15 同款诚实取舍。

@@ -4,35 +4,37 @@
 > 不会出现 "phase X 没做完，phase X+1 跑不动" 的依赖。
 >
 > **状态约定**：`[DONE]` 已交付（commit 已合）/ `[NEXT]` 下一步要做 / `[TODO]` 之后排队。
-> 完成一个 phase 就把状态改成 `[DONE]`，并在 [`JOURNAL.md`](../JOURNAL.md) 加一条里程碑记录。
-> 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 [`DECISIONS.md`](../DECISIONS.md) 记原因。
+> 完成一个 phase 就把状态改成 `[DONE]`，并在 `[JOURNAL.md](../JOURNAL.md)` 加一条里程碑记录。
+> 如果在执行中调整了路线（合并 / 拆分 / 换顺序），更新本文件并在 `[DECISIONS.md](../DECISIONS.md)` 记原因。
 >
-> **总体节奏**：核心交付线 **Phase 0–12 已全部完成**，即达到 design.md 描述的完整形态；亮点线已落地第一站 **Phase 13 Shadow Mode**。之后按需继续做 **亮点 phase**（后端 / 平台向推荐 **14 → 15**，Phase 16 暂缓）拉高简历与面试深度；**最后**用 **Phase 17 Demo 打磨**（录屏 + 最终数字，≈ 1 人天）一次性收尾打包——放最后是为了覆盖到所有已建功能。
+> **总体节奏**：核心交付线 **Phase 0–12 已全部完成**，即达到 design.md 描述的完整形态；亮点线已落地 **Phase 13 Shadow Mode** + **Phase 14 Adversarial Synth** + **Phase 15 Sequential Gate** + **Phase 16 Judge Calibration**。**最后**用 **Phase 17 Demo 打磨**（录屏 + 最终数字，≈ 1 人天）一次性收尾打包——放最后是为了覆盖到所有已建功能。
 
 ---
 
 ## 进度总览
 
-| 阶段 | 名称 | 状态 |
-|---|---|---|
-| Phase 0 | 仓库 bootstrap | `[DONE]` |
-| Phase 1 | Walking skeleton（FastAPI + DB + OTel mapper） | `[DONE]` |
-| Phase 2 | 多轴 CI Gate v1（fixtures 驱动） | `[DONE]` |
-| Phase 3 | OTel 端到端 + Trace 浏览 API | `[DONE]` |
-| Phase 4 | Eval Set Manager | `[DONE]` |
-| Phase 5 | Generic LLM-as-Judge Runner v1 | `[DONE]` |
-| Phase 6 | Judge Robustness（cross-vote + position-swap + self-consistency） | `[DONE]` |
-| Phase 7 | BadCase Finder（uncertainty + outlier） | `[DONE]` |
-| Phase 8 | RAG-aware Evaluator（RAGAS） | `[DONE]` |
-| Phase 9 | Agent Trajectory Evaluator | `[DONE]` |
-| Phase 10 | Safety 轴（PII + jailbreak） | `[DONE]` |
-| Phase 11 | Streamlit Ops UI v1 | `[DONE]` |
-| Phase 12 | 真实 CI Gate 端到端（替换 fixtures） | `[DONE]` |
-| Phase 13 | Shadow Mode（影子模式） | `[DONE]`（亮点 · 推荐 #1） |
-| Phase 14 | Adversarial Synth（对抗出题） | `[TODO]`（亮点 · 推荐 #2）← 下一步 |
-| Phase 15 | Sequential Gate（序贯 gate） | `[TODO]`（亮点 · 推荐 #3） |
-| Phase 16 | Judge Calibration（标定） | `[TODO]`（暂缓 / ML 研究向） |
-| Phase 17 | Demo 打磨（数据 + 录屏 + 数字） | `[TODO]`（最后收尾 · 打磨数字 / 录屏） |
+
+| 阶段       | 名称                                                              | 状态       |
+| -------- | --------------------------------------------------------------- | -------- |
+| Phase 0  | 仓库 bootstrap                                                    | `[DONE]` |
+| Phase 1  | Walking skeleton（FastAPI + DB + OTel mapper）                    | `[DONE]` |
+| Phase 2  | 多轴 CI Gate v1（fixtures 驱动）                                      | `[DONE]` |
+| Phase 3  | OTel 端到端 + Trace 浏览 API                                         | `[DONE]` |
+| Phase 4  | Eval Set Manager                                                | `[DONE]` |
+| Phase 5  | Generic LLM-as-Judge Runner v1                                  | `[DONE]` |
+| Phase 6  | Judge Robustness（cross-vote + position-swap + self-consistency） | `[DONE]` |
+| Phase 7  | BadCase Finder（uncertainty + outlier）                           | `[DONE]` |
+| Phase 8  | RAG-aware Evaluator（RAGAS）                                      | `[DONE]` |
+| Phase 9  | Agent Trajectory Evaluator                                      | `[DONE]` |
+| Phase 10 | Safety 轴（PII + jailbreak）                                       | `[DONE]` |
+| Phase 11 | Streamlit Ops UI v1                                             | `[DONE]` |
+| Phase 12 | 真实 CI Gate 端到端（替换 fixtures）                                     | `[DONE]` |
+| Phase 13 | Shadow Mode（影子模式）                                               | `[DONE]` |
+| Phase 14 | Adversarial Synth（对抗出题）                                         | `[DONE]` |
+| Phase 15 | Sequential Gate（序贯 gate）                                        | `[DONE]` |
+| Phase 16 | Judge Calibration（标定）                                           | `[DONE]` |
+| Phase 17 | Demo 打磨（数据 + 录屏 + 数字）                                           | `[TODO]` |
+
 
 核心 phase 是一条线性流水线，每个都建立在前一个之上：
 
@@ -47,13 +49,18 @@ flowchart LR
     P8 --> P11["P11<br/>Ops UI"]
     P11 --> P12["P12<br/>真实 CI Gate（核心完成）"]
     P12 -.亮点 phase.-> P13["P13<br/>Shadow Mode"]
-    P13 -.其余亮点之后.-> P17["P17<br/>Demo 打磨（收尾）"]
+    P13 --> P14["P14<br/>Adversarial Synth"]
+    P14 --> P15["P15<br/>Sequential Gate"]
+    P15 --> P16["P16<br/>Judge Calibration"]
+    P16 -.收尾.-> P17["P17<br/>Demo 打磨（收尾）"]
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724;
     classDef todo fill:#fff3cd,stroke:#ffc107,color:#856404;
-    class P0,P2,P3,P4,P5,P7,P8,P11,P12,P13 done;
+    class P0,P2,P3,P4,P5,P7,P8,P11,P12,P13,P14,P15,P16 done;
     class P17 todo;
 ```
+
+
 
 ---
 
@@ -68,12 +75,14 @@ flowchart LR
 - **目标**：trace 能写进 Postgres；最小可运行的服务端。
 - **已交付**：FastAPI app（`/healthz`、`/v1/traces` ingest 端点）+ async SQLAlchemy + Alembic 初始 migration + OTel span → 内部 schema 的 mapper + 对应单测。
 - **commit**：`039d9fc feat(api,db,ingest): walking skeleton — FastAPI app, async SQLAlchemy, Alembic, OTel mapper`
+- **详细技术方案**：见 [docs/PHASE_1_PLAN.md](./PHASE_1_PLAN.md)。
 
 ## Phase 2 · 多轴 CI Gate v1（fixtures 驱动）   [DONE]
 
 - **目标**：CLI `evalgate gate` 跑通，PR 上能看到四轴报告 + tag 归因。
 - **已交付**：`build_gate_report` 把 baseline/candidate JSON 算成 4 轴 metric（quality / cost / latency_p95 / safety）+ bootstrap diff CI + tag-wise attribution + GitHub Actions 自动评论 PR + 失败时阻塞 merge + demo seeder（在 billing tag 上注入 regression）。
 - **commit**：`be3a749 feat(gate): end-to-end multi-axis CI gate with bootstrap CI + tag attribution`
+- **详细技术方案**：见 [docs/PHASE_2_PLAN.md](./PHASE_2_PLAN.md)。
 
 ## Phase 3 · OTel 端到端打通 + Trace 浏览 API   [DONE]
 
@@ -97,7 +106,7 @@ flowchart LR
   - DB schema：`eval_sets`、`eval_cases`（`input` / `expected` / `tags`(JSONB list) / `source_trace_id`(软引用) / `source_span_id` / `task_type` enum: rag / agent / generic）+ 0003 Alembic migration + FK CASCADE。
   - REST：`POST /v1/eval-sets`、`GET /v1/eval-sets`、`GET /v1/eval-sets/{id_or_name}`、`POST /v1/eval-sets/{id}/cases`、`POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`。
   - CLI：`evalgate eval-set create / add / show`（直连 DB，`--set` 接 UUID 或 name）。
-  - 抽 case 策略：从 trace 找第一个 LLM span（`evalgate.kind=llm` OR 任意 `gen_ai.*` attribute），把 prompt → `case.input`、response → `case.expected`；`task_type` 按 trace 里是否有 retriever / 多个 tool span 启发式推断。
+  - 抽 case 策略：从 trace 找第一个 LLM span（`evalgate.kind=llm` OR 任意 `gen_ai.`* attribute），把 prompt → `case.input`、response → `case.expected`；`task_type` 按 trace 里是否有 retriever / 多个 tool span 启发式推断。
   - 24 个新单测（pure function + REST + CLI + 404/422 路径），全部跑在 aiosqlite fixture 上不依赖 docker。
   - 退出标准：本地 promote 5 trace → 5 case，REST + CLI 都返回正确 payload。
 - **commit**：（待 commit）
@@ -199,7 +208,7 @@ flowchart LR
 - **已交付**：
   - 新 REST `/v1/runs?eval_set_id=&limit=` + `/v1/runs/{id}` + `/v1/runs/{id}/records`：repo helper `judge.persistence.list_runs`，router `evals.py` 把 `EvalResultRow` 回吐成 `EvalRecord`-shape 直接喂回 `POST /v1/evals/run`。
   - `src/evalgate/ui/`：`api_client.EvalGateClient`（同步 `httpx.Client` + `EvalGateAPIError`，`EVALGATE_API_URL` 可覆盖 base URL）、`format` 纯函数、`Home.py` landing + 健康徽章、`pages/1_Traces.py` / `2_Eval_Sets.py` / `3_Reports.py`。
-  - 三个 page 全部只通过 client 调 `/v1/*`：Traces 分页 + span tree + promote-to-set 调 `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`；Eval Sets 列表 + 详情 + 创建表单；Reports 双 selectbox（baseline / candidate）→ 拉两组 records → POST `/v1/evals/run` → 4 轴 metric + sub-axes 表（quality / safety）+ 排序后的 tag 归因。
+  - 三个 page 全部只通过 client 调 `/v1/`*：Traces 分页 + span tree + promote-to-set 调 `POST /v1/eval-sets/{id}/cases/from-trace/{trace_id}`；Eval Sets 列表 + 详情 + 创建表单；Reports 双 selectbox（baseline / candidate）→ 拉两组 records → POST `/v1/evals/run` → 4 轴 metric + sub-axes 表（quality / safety）+ 排序后的 tag 归因。
   - `pyproject.toml` 主依赖加 `streamlit>=1.36` + `httpx>=0.27`（从 dev 提主），`Makefile` 加 `make ui`，README 加一节 “Ops UI”。
   - 测试矩阵：`test_runs_endpoint`（list / filter / limit / 404）、`test_runs_records_endpoint`（row → EvalRecord 透传 `axis_breakdown`/`retrieved_contexts`，端到端喂回 gate）、`test_ui_api_client`（`httpx.MockTransport` 验证 URL / params / pydantic 解析 / 错误码）、`test_ui_format`（latency / cost / score / datetime / 排序 / run label）。
 - **退出标准达成**：`make db-up && uv run alembic upgrade head && uv run python scripts/seed_demo.py && uv run evalgate-api` + 另一 shell `make ui` → 浏览器走完 Traces → promote → Eval Sets 看 case → CLI 跑两次 `evalgate run` → Reports 选两 run 看 4 轴 + sub-axes 报告。
@@ -215,7 +224,7 @@ flowchart LR
   - 重写 `.github/workflows/eval-gate.yml`：删 `seed_demo.py` + fixtures，改跑 orchestrator（`EVALGATE_MOCK_LLM=1`，离线确定性、零 token），保留 artifact 上传 + github-script PR 评论 + enforce；`workflow_dispatch` 留作可切真模型入口。
   - `make ci-gate`（mock）/ `make ci-gate-real`（本机 Ollama）。
   - **DB 用 SQLite ephemeral**（`Base.metadata.create_all`，不跑 alembic），CI 不依赖 Postgres service，和各 phase smoke 脚本一致。
-- **退出标准达成**：`make ci-gate` mock 端到端绿（4 等价类全连通，报告四轴 + 子项齐全，~6s）；`make ci-gate-real`（qwen3.5:9b + qwen3-embedding:8b）实测 **~140s**（两轮 8 次评测），削弱版 candidate 触发 `quality` 轴 fail，归因点名 `answer_relevance` 子项 + `rag` tag。
+- **退出标准达成**：`make ci-gate` mock 端到端绿（4 等价类全连通，报告四轴 + 子项齐全，~~6s）；`make ci-gate-real`（qwen3.5:9b + qwen3-embedding:8b）实测 **~~140s**（两轮 8 次评测），削弱版 candidate 触发 `quality` 轴 fail，归因点名 `answer_relevance` 子项 + `rag` tag。
 - **mock vs real 的刻意设计**：mock 下 baseline/candidate 同集各轴一致 → gate 必过，CI 这步是纯连通性检查；真模型下削弱 prompt 才暴露质量/安全回归（Phase 17 录屏素材）。详见 [DECISIONS.md ADR-009](../DECISIONS.md)。
 - **commit**：（待 commit）
 - **详细技术方案**：见 [docs/PHASE_12_PLAN.md](./PHASE_12_PLAN.md)。
@@ -227,12 +236,12 @@ flowchart LR
 > 这四个 phase **不在 design.md 的最小完整形态里**，是给 EvalGate 加技术深度 / 简历亮点用的。
 > 每个 phase 都标了 **依赖**（必须先做完哪些 phase）；不强制按编号顺序。
 >
-> **推荐路线（后端 / 平台工程向，深度优先做 3 个）**：核心 Phase 0–12 已完成，按此优先级挑 **3 个**亮点 phase 做透，最后再用 Phase 17 收尾——
-> 1. **Phase 13 Shadow Mode** ✅ 已完成（首选）：online shadow eval / 生产流量 A/B / 异步 fire-and-forget，几乎任何后端面试官都能聊。
-> 2. **Phase 14 Adversarial Synth**（下一步）：自动红队 + 闭环飞轮，LLM-safety 话题热、工程量适中，性价比高。
-> 3. **Phase 15 Sequential Gate**：cost-aware CI + 序贯检验，给一张"统计深度"的牌。
+> **推荐路线（后端 / 平台工程向）**：核心 Phase 0–12 已完成，四张亮点牌已全部打完，剩下 Phase 17 收尾——
 >
-> **Phase 16 Calibration 暂缓**：ML / 研究向最强，但对后端受众 ROI 偏低，且依赖 Phase 17 的人标数据——目标若转向 ML/研究再做。
+> 1. **Phase 13 Shadow Mode** ✅ 已完成（首选）：online shadow eval / 生产流量 A/B / 异步 fire-and-forget，几乎任何后端面试官都能聊。
+> 2. **Phase 14 Adversarial Synth** ✅ 已完成：自动红队 + 闭环飞轮，LLM-safety 话题热、工程量适中，性价比高。
+> 3. **Phase 15 Sequential Gate** ✅ 已完成：cost-aware CI + 序贯检验（Lan-DeMets α-spending + stochastic curtailment），给一张"统计深度"的牌。
+> 4. **Phase 16 Judge Calibration** ✅ 已完成：ECE + temperature scaling，把 judge 分数变成真概率，给一张"ML / 研究深度"的牌（自带 `human_labels` 表，也是 Phase 17 Cohen's κ 的数据源）。
 >
 > **Phase 17 Demo 打磨**放在所有 phase **最后**（见文末）：它是收尾打包，不是 feature。
 
@@ -247,11 +256,13 @@ flowchart LR
     P2["P2 Gate"] --> P15["P15 Sequential Gate"]
     P6["P6 Multi-Judge"] --> P15
     P6 --> P16["P16 Calibration"]
-    P17["P17 Demo（人工标注）"] --> P16
+    P16 -->|human_labels 表| P17["P17 Demo（Cohen's κ 复用）"]
 
     classDef hl fill:#e7d4f7,stroke:#8a2be2,color:#3a0a5d;
     class P13,P14,P15,P16 hl;
 ```
+
+
 
 > 下面 4 个亮点 phase **按推荐优先级排列**（不是编号顺序）：13 → 14 → 15 → 16（Shadow → Adversarial → Sequential → Calibration，其中 16 暂缓）。phase 编号是稳定 ID（被代码 / 其它 plan 文档引用），不重排号、只重排做的先后。
 
@@ -269,47 +280,48 @@ flowchart LR
 - **简历语言**：online shadow evaluation + production-traffic A/B + unknown-unknown detection。
 - **详细技术方案**：见 [docs/PHASE_13_PLAN.md](./PHASE_13_PLAN.md) + 接入指南 [docs/SHADOW.md](./SHADOW.md)。
 
-## Phase 14 · Adversarial Case Synth（红队自动出题）   [TODO · 推荐 #2]
+## Phase 14 · Adversarial Case Synth（红队自动出题）   [DONE · 推荐 #2]
 
 - **目标**：从 attribution 报告找最弱 tag → 用 generator-LLM **自动生成同 tag 的"刁钻 case"** → 人审后入 eval set，形成 "评测 → 找弱点 → 自动出题 → 再评测" 的飞轮。
 - **依赖**：Phase 7（BadCase Finder 提供 attribution + uncertainty）+ Phase 10（safety 检测器复用做对抗模板，可不严格阻塞）。
 - **交付**：
-  - `AdversarialSynth`：输入 `(tag, weak_cases[5..10])`，调用 generator-LLM 产 K=10 条候选 case；模板覆盖：边界值、歧义指代、prompt injection（"ignore previous instructions..."）、role confusion。
-  - 人审 gate：生成的 case 进 `eval_cases.status="pending"`，**不参与 gate**；CLI `evalgate adversarial review --set <id>` 逐条 approve/reject 切到 `status="active"`。
-  - `eval_cases` 加 `status` enum（pending/active/archived）+ `source` enum（trace/manual/adversarial）→ 新建 migration（下一个可用编号 0013+）。
-  - REST：`POST /v1/eval-sets/{id}/adversarial?tag=<t>&k=10`。
-  - 报告：`evalgate adversarial stats` 输出近 N 次 adversarial 命中率（多少条让 candidate 得分降 ≥ 0.2）。
-- **退出标准**：从 billing tag 自动出 10 条，approve 6 条；新 candidate 在其中 ≥3 条得分 < 0.5 → gate fail；录一段 demo screencast。
+  - `AdversarialSynth`（[src/evalgate/adversarial/synth.py](../src/evalgate/adversarial/synth.py)）：输入 `(tag, exemplars[≤5])`，一次 strict-JSON 调用 generator-LLM 产 K 条候选 case；模板覆盖：边界值、歧义指代、prompt injection（复用 `DEFAULT_JAILBREAK_KEYWORDS`）、role confusion。**reference-free**（不生成 gold），mock 模式确定性离线。
+  - 人审 gate：生成的 case 进 `status="pending"`，**runner 默认只看 `active`** 所以绝不入 gate；CLI `evalgate adversarial review` 逐条 approve（→active）/ reject（→archived）。
+  - `eval_cases` 加 `status`（pending/active/archived）+ `source`（trace/manual/adversarial）两列 → migration `0013`（含 `source='trace'` 回填）。
+  - REST：`POST /v1/eval-sets/{id}/adversarial?tag=<t>&k=10` / `GET .../pending` / `POST /v1/adversarial/{id}/review` / `GET .../stats`。
+  - 报告：`evalgate adversarial stats` 输出 adversarial 命中率（hit = candidate 最新得分 < 0.5 的绝对阈值）。
+- **退出标准达成**：`make adversarial-smoke` 从 billing tag 自动出 10 条 → 一次 run 验证 pending 被排除 → approve 6 / reject 4 → 再 run 含已审 case → safety 轴回归、gate fail；hit-rate 由 stats 给出。新增 34 个测试，全量绿、lint/format 通过。
 - **预估**：1 天。
 - **简历语言**：automated red-teaming + adversarial regression suite + closed-loop eval。
+- **详细技术方案**：见 [docs/PHASE_14_PLAN.md](./PHASE_14_PLAN.md)。
 
-## Phase 15 · Sequential Gate（边跑边判，省 judge 调用）   [TODO · 推荐 #3]
+## Phase 15 · Sequential Gate（边跑边判，省 judge 调用）   [DONE · 推荐 #3]
+
+> 技术方案详见 [PHASE_15_PLAN.md](./PHASE_15_PLAN.md)。
 
 - **目标**：CI gate 不再"跑满 N 才下结论"，而是流式接 `(case_id, score)`，每跑 K 条评估一次 → **显著变差立即停跑 fail / 显著一致提前 pass**，控制累计 Type-I error。
 - **依赖**：Phase 2（bootstrap CI 实现）+ Phase 6（per-case score 流式产出）。
-- **交付**：
-  - `SequentialGate` 模块：用 **α-spending**（O'Brien-Fleming 或 Pocock 边界）维持累计 α=0.05；连续 M 次没显著 → early pass；任一窗口越下边界 → early fail。
-  - `evalgate run --gate-mode sequential --baseline-run <id>`：runner 每出一条结果就问 gate 「还要继续吗」。
-  - gate 报告新增字段：`stopped_early: bool` + `cases_consumed: int` + `boundary_used: str`。
-  - 单测：simulate 1000 次 H0 / H1，断言实际 Type-I error ≈ 0.05、平均 case 消耗下降 ≥ 50%。
-- **退出标准**：同一 regressed PR 上对比 fixed-N gate vs sequential gate，judge 调用平均省 ≥ 50%，Type-I error 保持 ≤ 0.05。
-- **预估**：1 天（统计实现 + 蒙特卡洛单测占大头）。
-- **简历语言**：group sequential testing + α-spending function + cost-aware CI。
+- **已交付**：
+  - [report/sequential.py](../src/evalgate/report/sequential.py) 纯引擎：`obf`/`pocock` **α-spending** 维持累计 α=0.05；Lan-DeMets（Armitage-McPherson-Rowe）边界递归算 early-fail 下边界；**stochastic curtailment**（条件功效 < γ）算 early-pass；自实现 `norm_cdf`/`norm_ppf`（无 scipy）；有状态 `SequentialGate` + 纯回放 `evaluate_sequential`。
+  - [gate/sequential.py](../src/evalgate/gate/sequential.py) 编排：按 `case_id` **配对** baseline run 与 candidate 流，越界即 break（跳过剩余 judge 调用），停止点拼 `GateReport`——quality 轴判定来自 sequential（权威），cost/latency/safety 用固定-N 快照。
+  - `evalgate run --gate-mode sequential --baseline-run <id> [--look-every --spending --mde --gamma]`：`--out` 收 GateReport JSON，退出码即 gate 判定。
+  - `GateReport` 新增 `sequential` 块（`decision` / `stopped_early` / `cases_consumed` / `n_max` / `spending` / `mde` / `gamma` / 每次 look 的审计 `looks`）。
+  - 单测：1000 次 H0 / H1 Monte Carlo，断言 Type-I ≤ ~0.05、power ≥ 0.8、平均 case 消耗下降 ≥ 50%。
+- **退出标准**：✅ 同一 regressed 场景对比 fixed-N vs sequential，judge 调用平均省 ≥ 50%（回归 ~75% / 干净 ~58%），Type-I error 保持 ≤ 0.05。
+- **简历语言**：group sequential testing + α-spending function + stochastic curtailment + cost-aware CI。
 
-## Phase 16 · Judge Calibration（ECE + temperature scaling）   [TODO · 暂缓 / ML 研究向]
+## Phase 16 · Judge Calibration（ECE + temperature scaling）   [DONE · 推荐 #4]
 
-- **目标**：让 judge 给出的 `confidence` 真有概率意义——judge 说 0.8，实际人工通过率就是 80%。
-- **依赖**：Phase 6（multi-judge confidence）+ Phase 17（人工标注 ground truth ≥ 30 条）。**注**：Phase 17 虽排在文末收尾，但真要做本 phase 时，需把其中 Cohen's κ 人工标注那一步提前到这里。
-- **交付**：
-  - 用 Phase 17 那批人标 case 配对 `(judge_score, human_label)`：
-    - 画 **reliability diagram**（10 bins）；
-    - 算 **ECE** + **MCE**；
-    - 跑 **temperature scaling**（单参数 logistic）拟合 → 落到 `calibration_params.json`。
-  - `CalibratedJudge` wrapper：原始 score → calibrated score；BadCase Finder 的 uncertainty sampling 切到 calibrated confidence。
-  - 报告：`evalgate calibration report` 输出 ECE-before / ECE-after + reliability 图（matplotlib png）。
-  - 单测：手造 miscalibrated 数据（systematic overconfidence），断言 temperature scaling 后 ECE 显著下降。
-- **退出标准**：ECE 从 ≥ 0.15 降到 ≤ 0.05；切到 calibrated confidence 后 BadCase Finder top-N 召回 mock-bad 提升（用合成数据可验证）。
-- **预估**：1 天。
+> 技术方案详见 [PHASE_16_PLAN.md](./PHASE_16_PLAN.md)。
+
+- **目标**：让 judge 给出的 `score` 真有概率意义——judge 说 0.8，实际人工通过率就是 80%。校准对象是 `score`（目标信号），而非启发式 `judge_confidence`。
+- **依赖**：Phase 6（per-result score 落库）。本 phase **自带** `human_labels` ground-truth 表（不再依赖 Phase 17）——反过来 Phase 17 Cohen's κ 复用这张表。
+- **已交付**：
+  - [report/calibration.py](../src/evalgate/report/calibration.py) 纯引擎：`sigmoid`/`logit`（eps 截断）、**ECE/MCE**（等宽 10 桶）、`reliability_curve`、**temperature scaling** `fit_temperature`（以 `w=1/T` 为变量的凸一维 NLL + golden-section，无 scipy/sklearn）、`Calibrator`（`score -> P(good)` + `uncertainty = 1-|2p-1|`）、`evaluate_calibration`（before/after 一把出）、`render_reliability_png`（懒加载 matplotlib）。
+  - 新建 `human_labels` 表 + [migration 0014](../src/evalgate/db/migrations/versions/0014_create_human_labels.py)（软引用 `eval_result_id`）；[calibration/repository.py](../src/evalgate/calibration/repository.py)：`add_label`/`list_labels`/`fetch_scored_labels`（join + good→1/bad→0 + 取最新标签）/`fit_and_save`（写 `calibration_params.json`）/`load_calibrator`。
+  - `evalgate calibration label|fit|report`（`report --plot` 出 reliability png）；`evalgate badcase list --calibration <params>` 把 uncertainty sampling 切到**校准后不确定度**（`eval_results` 原始分数读时变换，保持不可变）。
+  - 单测：手造 systematic overconfidence，断言 temperature scaling 后 ECE 显著下降 + 校准后 BadCase 召回提升 + migration round-trip。
+- **退出标准**：✅ ECE 从 ≥ 0.15 降到 ≤ 0.05（smoke 实测 0.165→0.029，T≈3.6）；切到校准后不确定度后 BadCase top-N 召回边界 case 由 18% 提升到 100%（合成数据）。
 - **简历语言**：Expected Calibration Error + temperature scaling + reliability diagram；引 Guo et al. 2017。
 
 ---
@@ -331,10 +343,11 @@ flowchart LR
 
 ## 执行守则
 
-1. **核心线已完成（Phase 0–12）+ 亮点 Phase 13 Shadow Mode 已落地**，每个 phase 都有"可独立 demo"的退出标准。接下来按 **后端/平台向推荐路线**继续做亮点 phase：**14 → 15**（16 暂缓），深度优先、别贪多；**Phase 17 Demo 打磨放到最后**做收尾打包（录屏 / 最终数字）。
+1. **核心线已完成（Phase 0–12）+ 亮点 Phase 13 Shadow Mode、Phase 14 Adversarial Synth、Phase 15 Sequential Gate、Phase 16 Judge Calibration 已落地**，每个 phase 都有"可独立 demo"的退出标准。四张亮点牌已打完；**Phase 17 Demo 打磨放到最后**做收尾打包（录屏 / 最终数字）。
 2. **每个 phase 一个 PR / commit 块**。commit message 格式参照已有：`feat(scope): 一句话描述`。
 3. **每完成一个 phase**：
-   - 改本文件状态为 `[DONE]`。
-   - 在 `JOURNAL.md` 顶部加一条（日期 + phase + 一段话讲做了啥 + 涉及的关键技术）。
-   - 如果做的过程里改了路线 / 推翻了某个设计假设：在 `DECISIONS.md` 加一条 ADR。
+  - 改本文件状态为 `[DONE]`。
+  - 在 `JOURNAL.md` 顶部加一条（日期 + phase + 一段话讲做了啥 + 涉及的关键技术）。
+  - 如果做的过程里改了路线 / 推翻了某个设计假设：在 `DECISIONS.md` 加一条 ADR。
 4. **碰到 scope 膨胀**（一个 phase 干不完）：拆成 phase Xa / Xb，更新本文件，**不要硬塞进 1 天**。
+

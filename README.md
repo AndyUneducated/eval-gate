@@ -76,7 +76,7 @@ safety 轴的 4 个子维度（sub-metric）：`pii_input_rate`（输入含 PII�
 回归会按 `tag` / `intent` 做归因（attribution），因此报告写的是
 *"billing intent 掉了 8 个点"*，而不是 *"pass rate 掉了 0.5%"*。
 
-> **状态**：Phase 0–13 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通，**CI 卡口已从 fixtures 切到真 judge 流水线**（Phase 12），并新增 **Shadow Mode**（生产流量上无害评测 candidate，Phase 13 · 见 [`docs/SHADOW.md`](docs/SHADOW.md)）。
+> **状态**：Phase 0–16 已落地 —— OTel ingest、任务分层 judge runner、RAG / Agent / Safety evaluator、四维 gate、Streamlit 运维 UI 全部端到端跑通，**CI 卡口已从 fixtures 切到真 judge 流水线**（Phase 12），并新增 **Shadow Mode**（生产流量上无害评测 candidate，Phase 13 · 见 [`docs/SHADOW.md`](docs/SHADOW.md)）+ **Adversarial Synth**（红队自动出题闭环飞轮，Phase 14 · 见 [`docs/PHASE_14_PLAN.md`](docs/PHASE_14_PLAN.md)）+ **Sequential Gate**（边跑边判、α-spending + curtailment 提前停跑省 judge 调用，Phase 15 · 见 [`docs/PHASE_15_PLAN.md`](docs/PHASE_15_PLAN.md)）+ **Judge Calibration**（ECE + temperature scaling 把 judge 分数变成真概率，Phase 16 · 见 [`docs/PHASE_16_PLAN.md`](docs/PHASE_16_PLAN.md)）。
 > 详见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 架构总览
@@ -124,6 +124,9 @@ graph TB
 | [`docs/design.md`](docs/design.md) | 完整的产品 + 技术 spec —— 功能、架构、取舍的唯一信息源，先看这个。 |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 分阶段的交付计划（每个阶段大约 1 人天），用 `[DONE]` / `[NEXT]` / `[TODO]` 跟踪。 |
 | [`docs/SHADOW.md`](docs/SHADOW.md) | Shadow Mode（Phase 13）3 行接入指南 —— 生产流量上无害评测 candidate。 |
+| [`docs/PHASE_14_PLAN.md`](docs/PHASE_14_PLAN.md) | Adversarial Synth（Phase 14）红队自动出题 —— case 生命周期 + 闭环飞轮技术方案。 |
+| [`docs/PHASE_15_PLAN.md`](docs/PHASE_15_PLAN.md) | Sequential Gate（Phase 15）边跑边判 —— paired 序贯检验 + α-spending + stochastic curtailment 技术方案。 |
+| [`docs/PHASE_16_PLAN.md`](docs/PHASE_16_PLAN.md) | Judge Calibration（Phase 16）—— ECE/MCE + temperature scaling + reliability diagram + 校准后不确定度采样技术方案。 |
 | [`DECISIONS.md`](DECISIONS.md) | ADR 风格的关键技术决策日志（为什么用 OTel、为什么 PG+JSONB、为什么砍掉 prompt UI ……）。 |
 | [`JOURNAL.md`](JOURNAL.md) | 倒序的里程碑日志 —— 每个上线阶段一段话。 |
 
@@ -185,6 +188,9 @@ consumer app + prompt，就能把卡口接到你自己的 pipeline 上。
 | `make db-up` / `make db-down` | 管理本地 Postgres |
 | `make ui` | 在 `http://127.0.0.1:8501` 启动 Streamlit 运维 UI（通过 HTTP 调 `evalgate-api`） |
 | `make shadow-smoke` | Phase 13 Shadow Mode 端到端 smoke（离线：1k 流量 → 滚动报告 → 报警） |
+| `make adversarial-smoke` | Phase 14 Adversarial Synth 端到端 smoke（离线：自动出题 → 人审 → gate fail） |
+| `make sequential-smoke` | Phase 15 Sequential Gate smoke（离线合成：回归提前 FAIL / 干净提前 PASS，打印省调用比例） |
+| `make calibration-smoke` | Phase 16 Judge Calibration smoke（离线合成：ECE 0.165→0.029、拟合温度、reliability 图、校准后召回提升） |
 
 ## 运维 UI（Phase 11）
 
