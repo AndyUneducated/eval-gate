@@ -15,6 +15,7 @@ import json
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+from evalgate.core.errors import EvalGateError
 from evalgate.core.schemas import TaskKind
 
 
@@ -29,8 +30,12 @@ class SpanLike(Protocol):
     parent_span_id: str | None
 
 
-class NoLLMSpanError(ValueError):
+class NoLLMSpanError(EvalGateError, ValueError):
     """Raised when a trace has no recognizable LLM span to promote."""
+
+    http_status = 422
+    exit_code = 1
+    slug = "no_llm_span"
 
 
 _LLM_PROMPT_KEYS = ("gen_ai.prompt", "gen_ai.request.messages", "messages", "prompt", "input")

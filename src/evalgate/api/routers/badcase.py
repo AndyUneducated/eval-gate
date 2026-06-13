@@ -23,7 +23,6 @@ from evalgate.core.config import is_mock_llm
 from evalgate.core.logging import get_logger
 from evalgate.core.schemas import BadCaseOut, PromotionOut
 from evalgate.db.session import get_session
-from evalgate.eval_set import repository as set_repo
 
 log = get_logger("evalgate.api.badcase")
 router = APIRouter()
@@ -48,15 +47,7 @@ def _badcase_out(bc: finder.BadCase) -> BadCaseOut:
 
 
 def _promotion_out(row: Any) -> PromotionOut:
-    return PromotionOut(
-        id=row.id,
-        eval_case_id=row.eval_case_id,
-        eval_set_id=row.eval_set_id,
-        promoted_from_result_id=row.promoted_from_result_id,
-        strategy=row.strategy,
-        tags=list(row.tags or []),
-        created_at=row.created_at,
-    )
+    return PromotionOut.model_validate(row)
 
 
 def _mock_enabled() -> bool:
@@ -104,20 +95,13 @@ async def promote_badcase(
     payload: PromoteRequest,
     session: SessionDep,
 ) -> PromotionOut:
-    try:
-        membership = await badcase_repo.promote_result_to_set(
-            session,
-            eval_result_id=eval_result_id,
-            target_set_id_or_name=payload.target_set,
-            strategy=payload.strategy,
-            extra_tags=payload.extra_tags,
-        )
-    except badcase_repo.BadCaseNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except badcase_repo.AlreadyPromotedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except set_repo.EvalSetNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    membership = await badcase_repo.promote_result_to_set(
+        session,
+        eval_result_id=eval_result_id,
+        target_set_id_or_name=payload.target_set,
+        strategy=payload.strategy,
+        extra_tags=payload.extra_tags,
+    )
     log.info(
         "badcase.promote",
         eval_result_id=eval_result_id,

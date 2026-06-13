@@ -17,12 +17,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.core.logging import get_logger
-from evalgate.core.schemas import EvalCaseOut, EvalSetDetail, EvalSetOut, TaskKind
+from evalgate.core.schemas import (
+    EvalCaseOut,
+    EvalSetDetail,
+    EvalSetOut,
+    TaskKind,
+)
 from evalgate.db.session import get_session
 from evalgate.eval_set import repository
 
@@ -59,28 +64,11 @@ class EvalSetListResponse(BaseModel):
 
 
 def _set_out(row) -> EvalSetOut:
-    return EvalSetOut(
-        id=row.id,
-        name=row.name,
-        description=row.description,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
+    return EvalSetOut.model_validate(row)
 
 
 def _case_out(row) -> EvalCaseOut:
-    return EvalCaseOut(
-        id=row.id,
-        task_type=TaskKind(row.task_type),
-        input=row.input,
-        expected=row.expected,
-        tags=list(row.tags or []),
-        retrieved_contexts=list(row.retrieved_contexts or []),
-        expected_trajectory=list(row.expected_trajectory or []),
-        source_trace_id=row.source_trace_id,
-        source_span_id=row.source_span_id,
-        created_at=row.created_at,
-    )
+    return EvalCaseOut.model_validate(row)
 
 
 @router.post("/eval-sets", response_model=EvalSetOut, status_code=status.HTTP_201_CREATED)
@@ -104,12 +92,11 @@ async def list_eval_sets(
 
 @router.get("/eval-sets/{set_id}", response_model=EvalSetDetail)
 async def get_eval_set_detail(set_id: str, session: SessionDep) -> EvalSetDetail:
-    try:
-        resolved = await repository.resolve_set_id(session, set_id)
-    except repository.EvalSetNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    resolved = await repository.resolve_set_id(session, set_id)
     set_row = await repository.get_eval_set(session, resolved)
-    cases = await repository.list_cases(session, resolved)
+    # Detail view is informational — surface every case regardless of review
+    # status (active / pending / archived), each tagged with its status.
+    cases = await repository.list_cases(session, resolved, statuses=None)
     base = _set_out(set_row)
     return EvalSetDetail(
         **base.model_dump(),
@@ -123,22 +110,19 @@ async def get_eval_set_detail(set_id: str, session: SessionDep) -> EvalSetDetail
     status_code=status.HTTP_201_CREATED,
 )
 async def add_case(set_id: str, payload: CreateCaseRequest, session: SessionDep) -> EvalCaseOut:
-    try:
-        resolved = await repository.resolve_set_id(session, set_id)
-        row = await repository.add_case(
-            session,
-            set_id=resolved,
-            task_type=payload.task_type,
-            input=payload.input,
-            expected=payload.expected,
-            tags=payload.tags,
-            retrieved_contexts=payload.retrieved_contexts,
-            expected_trajectory=payload.expected_trajectory,
-            source_trace_id=payload.source_trace_id,
-            source_span_id=payload.source_span_id,
-        )
-    except repository.EvalSetNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    resolved = await repository.resolve_set_id(session, set_id)
+    row = await repository.add_case(
+        session,
+        set_id=resolved,
+        task_type=payload.task_type,
+        input=payload.input,
+        expected=payload.expected,
+        tags=payload.tags,
+        retrieved_contexts=payload.retrieved_contexts,
+        expected_trajectory=payload.expected_trajectory,
+        source_trace_id=payload.source_trace_id,
+        source_span_id=payload.source_span_id,
+    )
     return _case_out(row)
 
 
@@ -154,19 +138,12 @@ async def add_case_from_trace(
     payload: FromTraceRequest | None = None,
 ) -> EvalCaseOut:
     payload = payload or FromTraceRequest()
-    try:
-        resolved = await repository.resolve_set_id(session, set_id)
-        row = await repository.add_case_from_trace(
-            session,
-            set_id=resolved,
-            trace_id=trace_id,
-            extra_tags=payload.tags,
-            task_type_override=payload.task_type,
-        )
-    except repository.EvalSetNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repository.TraceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repository.NoLLMSpanError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    resolved = await repository.resolve_set_id(session, set_id)
+    row = await repository.add_case_from_trace(
+        session,
+        set_id=resolved,
+        trace_id=trace_id,
+        extra_tags=payload.tags,
+        task_type_override=payload.task_type,
+    )
     return _case_out(row)

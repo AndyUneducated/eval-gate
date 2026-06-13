@@ -5,11 +5,22 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from evalgate import __version__
-from evalgate.api.routers import badcase, dev, eval_sets, evals, otlp, shadow, traces
+from evalgate.api.routers import (
+    adversarial,
+    badcase,
+    dev,
+    eval_sets,
+    evals,
+    otlp,
+    shadow,
+    traces,
+)
 from evalgate.core.config import get_settings
+from evalgate.core.errors import EvalGateError
 from evalgate.core.logging import configure_logging, get_logger
 
 
@@ -31,6 +42,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.exception_handler(EvalGateError)
+    async def _handle_domain_error(_: Request, exc: EvalGateError) -> JSONResponse:
+        """Map any raised domain error to its declared HTTP status in one place.
+
+        Routers raise repository errors directly (no per-route ``try/except ...
+        raise HTTPException``); the status code lives on the error class
+        (``core.errors``), so the API and CLI can't drift."""
+        return JSONResponse(status_code=exc.http_status, content={"detail": str(exc)})
+
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
@@ -40,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(eval_sets.router, prefix="/v1", tags=["eval-sets"])
     app.include_router(evals.router, prefix="/v1", tags=["evals", "runs"])
     app.include_router(badcase.router, prefix="/v1", tags=["badcase"])
+    app.include_router(adversarial.router, prefix="/v1", tags=["adversarial"])
     app.include_router(shadow.router, prefix="/v1", tags=["shadow"])
     app.include_router(dev.router, prefix="/v1", tags=["dev"])
     return app

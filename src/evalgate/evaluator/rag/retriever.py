@@ -100,5 +100,3 @@ class EmbeddingRetriever:
         k = min(self.spec.top_k, len(self._corpus))
         top_idx = np.argsort(-sims)[:k]
         return [self._corpus[int(i)]["text"] for i in top_idx]
-
-

@@ -8,32 +8,30 @@ fell 0.5%".
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any
 
 import numpy as np
 
-EvalRecord = dict[str, Any]
+from evalgate.core.schemas import EvalRecord, RecordInput, coerce_records
 
 
 def _record_tags(record: EvalRecord) -> Iterable[str]:
-    raw = record.get("tags") or []
-    if isinstance(raw, str):
-        return [raw]
-    return [str(t) for t in raw]
+    return [str(t) for t in (record.tags or [])]
 
 
 def tagwise_attribution(
-    baseline: Sequence[EvalRecord],
-    candidate: Sequence[EvalRecord],
+    baseline: Sequence[RecordInput],
+    candidate: Sequence[RecordInput],
 ) -> dict[str, dict[str, float]]:
+    baseline = coerce_records(baseline)
+    candidate = coerce_records(candidate)
     tags: set[str] = set()
     for record in (*baseline, *candidate):
         tags.update(_record_tags(record))
 
     out: dict[str, dict[str, float]] = {}
     for tag in sorted(tags):
-        b_scores = [float(r.get("score", 0.0)) for r in baseline if tag in _record_tags(r)]
-        c_scores = [float(r.get("score", 0.0)) for r in candidate if tag in _record_tags(r)]
+        b_scores = [float(r.score) for r in baseline if tag in _record_tags(r)]
+        c_scores = [float(r.score) for r in candidate if tag in _record_tags(r)]
         if not b_scores and not c_scores:
             continue
         b_mean = float(np.mean(b_scores)) if b_scores else 0.0

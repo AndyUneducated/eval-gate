@@ -16,16 +16,11 @@ from typing import Any, Literal
 
 import numpy as np
 
-from evalgate.core.schemas import AxisMetric
+from evalgate.core.schemas import AxisMetric, EvalRecord, RecordInput, coerce_records
 from evalgate.report.significance import bootstrap_diff_ci
 
 Direction = Literal["higher_is_better", "lower_is_better"]
 Aggregator = Literal["mean", "p95"]
-
-EvalRecord = dict[str, Any]
-
-SAFETY_AXIS = "safety"
-SAFETY_DIRECTION: Direction = "lower_is_better"
 
 # p95 latency on real local inference wobbles run-to-run; require a candidate
 # regression to exceed this fraction of the baseline p95 (and be significant)
@@ -35,13 +30,26 @@ LATENCY_REL_TOLERANCE = 0.10
 
 @dataclass(frozen=True)
 class AxisSpec:
+    """Declarative description of one gate axis.
+
+    A *scalar* axis (quality / cost / latency) has an ``extractor`` + an
+    ``aggregator`` and is judged by a bootstrap CI on that aggregate. A
+    *breakdown-only* axis (safety) has ``extractor=None`` / ``aggregator=None``:
+    it carries no scalar, only nested per-sub-metric axes derived from
+    ``axis_breakdown[name]``, and ``passed = all(sub.passed)``. Making safety a
+    plain ``AXES`` entry removes the bespoke branch that used to special-case it.
+    """
+
     name: str
     direction: Direction
-    extractor: Callable[[EvalRecord], float]
-    aggregator: Aggregator
+    extractor: Callable[[EvalRecord], float] | None
+    aggregator: Aggregator | None
     # Minimum |delta| as a fraction of the baseline aggregate before a
     # (significant, bad-direction) change counts as a regression. 0 = no band.
     rel_tolerance: float = 0.0
+    # When True, derive nested sub-axes from ``axis_breakdown[name]`` (each its
+    # own bootstrap-CI mean axis, ``direction`` inherited from the parent).
+    has_sub_metrics: bool = False
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -56,27 +64,31 @@ AXES: tuple[AxisSpec, ...] = (
     AxisSpec(
         name="quality",
         direction="higher_is_better",
-        extractor=lambda r: float(r.get("score", 0.0)),
+        extractor=lambda r: float(r.score),
         aggregator="mean",
+        has_sub_metrics=True,
     ),
     AxisSpec(
         name="cost",
         direction="lower_is_better",
-        extractor=lambda r: float(r.get("cost_usd", 0.0)),
+        extractor=lambda r: float(r.cost_usd),
         aggregator="mean",
     ),
     AxisSpec(
         name="latency_p95",
         direction="lower_is_better",
-        extractor=lambda r: float(r.get("latency_ms", 0.0)),
+        extractor=lambda r: float(r.latency_ms),
         aggregator="p95",
         rel_tolerance=LATENCY_REL_TOLERANCE,
     ),
+    AxisSpec(
+        name="safety",
+        direction="lower_is_better",
+        extractor=None,
+        aggregator=None,
+        has_sub_metrics=True,
+    ),
 )
-
-_SUB_AXIS_PARENTS: dict[str, Direction] = {
-    "quality": "higher_is_better",
-}
 
 
 def _aggregate(spec: AxisSpec, values: Sequence[float]) -> float:
@@ -103,45 +115,57 @@ def _is_regression(
 
 
 def build_axis_metrics(
-    baseline: Sequence[EvalRecord],
-    candidate: Sequence[EvalRecord],
+    baseline: Sequence[RecordInput],
+    candidate: Sequence[RecordInput],
 ) -> list[AxisMetric]:
+    baseline = coerce_records(baseline)
+    candidate = coerce_records(candidate)
     metrics: list[AxisMetric] = []
     for spec in AXES:
-        b_vals = [spec.extractor(r) for r in baseline]
-        c_vals = [spec.extractor(r) for r in candidate]
-        b_agg = _aggregate(spec, b_vals)
-        c_agg = _aggregate(spec, c_vals)
-        delta = c_agg - b_agg
+        b_agg = c_agg = delta = 0.0
+        ci_low: float | None = None
+        ci_high: float | None = None
+        significant = False
+        regressed = False
 
-        if b_vals and c_vals:
-            boot = bootstrap_diff_ci(b_vals, c_vals, statistic=spec.aggregator)
-            ci_low = boot.ci_low
-            ci_high = boot.ci_high
-            significant = boot.significant
-            regressed = _is_regression(
-                direction=spec.direction,
-                delta=delta,
-                baseline_agg=b_agg,
-                significant=significant,
-                rel_tolerance=spec.rel_tolerance,
-            )
-        else:
-            ci_low = ci_high = None
-            significant = False
-            regressed = False
+        # Scalar axes (extractor + aggregator) get a bootstrap-CI verdict on
+        # their aggregate; breakdown-only axes (safety) carry no scalar.
+        if spec.extractor is not None and spec.aggregator is not None:
+            b_vals = [spec.extractor(r) for r in baseline]
+            c_vals = [spec.extractor(r) for r in candidate]
+            b_agg = _aggregate(spec, b_vals)
+            c_agg = _aggregate(spec, c_vals)
+            delta = c_agg - b_agg
+            if b_vals and c_vals:
+                boot = bootstrap_diff_ci(b_vals, c_vals, statistic=spec.aggregator)
+                ci_low = boot.ci_low
+                ci_high = boot.ci_high
+                significant = boot.significant
+                regressed = _is_regression(
+                    direction=spec.direction,
+                    delta=delta,
+                    baseline_agg=b_agg,
+                    significant=significant,
+                    rel_tolerance=spec.rel_tolerance,
+                )
 
         sub_metrics: dict[str, AxisMetric] | None = None
         sub_regressed = False
-        if spec.name in _SUB_AXIS_PARENTS:
+        if spec.has_sub_metrics:
             sub_metrics = _build_sub_metric_axes(
                 baseline,
                 candidate,
                 axis_name=spec.name,
-                direction=_SUB_AXIS_PARENTS[spec.name],
+                direction=spec.direction,
             )
             if sub_metrics:
                 sub_regressed = any(not s.passed for s in sub_metrics.values())
+
+        # A breakdown-only axis with no data at all (no records carry its
+        # axis_breakdown bucket) is omitted entirely, matching the prior
+        # "safety only shows up when there are safety sub-metrics" behavior.
+        if spec.aggregator is None and sub_metrics is None:
+            continue
 
         metrics.append(
             AxisMetric(
@@ -154,28 +178,6 @@ def build_axis_metrics(
                 significant=significant,
                 passed=not (regressed or sub_regressed),
                 sub_metrics=sub_metrics,
-            )
-        )
-
-    safety_subs = _build_sub_metric_axes(
-        baseline,
-        candidate,
-        axis_name=SAFETY_AXIS,
-        direction=SAFETY_DIRECTION,
-    )
-    if safety_subs:
-        sub_regressed = any(not s.passed for s in safety_subs.values())
-        metrics.append(
-            AxisMetric(
-                name=SAFETY_AXIS,
-                baseline=0.0,
-                candidate=0.0,
-                delta=0.0,
-                ci_low=None,
-                ci_high=None,
-                significant=False,
-                passed=not sub_regressed,
-                sub_metrics=safety_subs,
             )
         )
 
@@ -230,9 +232,7 @@ def _build_sub_metric_axes(
 
 
 def _bucket(rec: EvalRecord, axis_name: str) -> dict[str, Any] | None:
-    if not isinstance(rec, dict):
-        return None
-    breakdown = rec.get("axis_breakdown")
+    breakdown = rec.axis_breakdown
     if not isinstance(breakdown, dict):
         return None
     inner = breakdown.get(axis_name)

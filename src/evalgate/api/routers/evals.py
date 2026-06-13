@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.core.schemas import EvalRecord, GateReport
@@ -51,6 +51,8 @@ class EvalRunOut(BaseModel):
     this as `<created_at> · <prompt_path> · <candidate_model>`.
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     eval_set_id: str
     prompt_path: str
@@ -79,17 +81,7 @@ class EvalRunRecordsResponse(BaseModel):
 
 
 def _run_out(row: EvalRunRow) -> EvalRunOut:
-    return EvalRunOut(
-        id=row.id,
-        eval_set_id=row.eval_set_id,
-        prompt_path=row.prompt_path,
-        prompt_hash=row.prompt_hash,
-        candidate_model=row.candidate_model,
-        judge_model=row.judge_model,
-        total_cases=row.total_cases,
-        mean_score=row.mean_score,
-        created_at=row.created_at,
-    )
+    return EvalRunOut.model_validate(row)
 
 
 def _result_to_record(row: EvalResultRow) -> EvalRecord:

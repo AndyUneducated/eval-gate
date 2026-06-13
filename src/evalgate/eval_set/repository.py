@@ -14,18 +14,27 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from evalgate.core.schemas import TaskKind
+from evalgate.core.errors import EvalGateError
+from evalgate.core.schemas import CaseSource, CaseStatus, TaskKind
 from evalgate.db.models import EvalCaseRow, EvalCaseSetMembershipRow, EvalSetRow
 from evalgate.ingest import persistence
 from evalgate.ingest.case_extract import NoLLMSpanError, extract_case_from_trace
 
 
-class EvalSetNotFoundError(LookupError):
+class EvalSetNotFoundError(EvalGateError, LookupError):
     """Raised when a set lookup by id-or-name fails to resolve."""
 
+    http_status = 404
+    exit_code = 1
+    slug = "eval_set_not_found"
 
-class TraceNotFoundError(LookupError):
+
+class TraceNotFoundError(EvalGateError, LookupError):
     """Raised when promote-from-trace targets a missing trace."""
+
+    http_status = 404
+    exit_code = 1
+    slug = "trace_not_found"
 
 
 def _new_id() -> str:
@@ -79,13 +88,26 @@ async def resolve_set_id(session: AsyncSession, identifier: str) -> str:
     return row.id
 
 
-async def list_cases(session: AsyncSession, set_id: str) -> list[EvalCaseRow]:
-    """Return all cases that belong to ``set_id``.
+_ACTIVE_ONLY: tuple[str, ...] = (CaseStatus.active.value,)
+
+
+async def list_cases(
+    session: AsyncSession,
+    set_id: str,
+    *,
+    statuses: tuple[str, ...] | None = _ACTIVE_ONLY,
+) -> list[EvalCaseRow]:
+    """Return cases that belong to ``set_id``.
 
     Single source of truth (Phase 4.5): every case lives in a set via
     exactly one ``EvalCaseSetMembershipRow`` row (or more, if it was
     promoted into additional sets). Order by case ``created_at`` ascending
     so Phase 5 runner iteration stays deterministic.
+
+    Phase 14: ``statuses`` filters on ``EvalCaseRow.status`` and defaults to
+    ``("active",)`` — so the runner / gate never see ``pending`` (awaiting
+    review) or ``archived`` (rejected) cases. Pass ``statuses=None`` to return
+    every case regardless of status (used by detail / show views).
     """
     stmt = (
         select(EvalCaseRow)
@@ -96,6 +118,8 @@ async def list_cases(session: AsyncSession, set_id: str) -> list[EvalCaseRow]:
         .where(EvalCaseSetMembershipRow.eval_set_id == set_id)
         .order_by(EvalCaseRow.created_at)
     )
+    if statuses is not None:
+        stmt = stmt.where(EvalCaseRow.status.in_(statuses))
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -120,6 +144,8 @@ async def add_case(
     input: dict[str, Any],
     expected: dict[str, Any] | None = None,
     tags: list[str] | None = None,
+    status: str | CaseStatus = CaseStatus.active,
+    source: str | CaseSource = CaseSource.manual,
     retrieved_contexts: list[str] | None = None,
     expected_trajectory: list[dict[str, Any]] | None = None,
     source_trace_id: str | None = None,
@@ -131,6 +157,8 @@ async def add_case(
     row = EvalCaseRow(
         id=_new_id(),
         task_type=str(task_type),
+        status=str(status),
+        source=str(source),
         input=dict(input),
         expected=dict(expected) if expected is not None else None,
         tags=list(tags or []),
@@ -195,6 +223,7 @@ async def add_case_from_trace(
         input=payload["input"],
         expected=payload["expected"],
         tags=payload["tags"],
+        source=CaseSource.trace,
         retrieved_contexts=payload.get("retrieved_contexts") or [],
         expected_trajectory=payload.get("expected_trajectory") or [],
         source_trace_id=trace_id,

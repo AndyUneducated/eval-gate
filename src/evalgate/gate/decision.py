@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
-from evalgate.core.schemas import AxisMetric, GateReport
+from evalgate.core.schemas import AxisMetric, GateReport, RecordInput
 from evalgate.report.attribution import tagwise_attribution
 from evalgate.report.multi_axis import build_axis_metrics
 
-EvalRecord = dict[str, Any]
-
 
 def build_gate_report(
-    baseline: Sequence[EvalRecord],
-    candidate: Sequence[EvalRecord],
+    baseline: Sequence[RecordInput],
+    candidate: Sequence[RecordInput],
 ) -> GateReport:
     axes = build_axis_metrics(baseline, candidate)
     attribution = tagwise_attribution(baseline, candidate)

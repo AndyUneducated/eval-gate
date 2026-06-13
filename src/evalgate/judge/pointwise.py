@@ -12,7 +12,6 @@ every call site and lets each parser specialise.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from evalgate.judge.prompt_spec import JudgeSpec
@@ -25,13 +24,6 @@ from evalgate.judge.protocol import (
 )
 
 _MOCK_POINTWISE = '{"score": 0.5, "reason": "mock"}'
-
-
-@dataclass
-class PointwiseVerdict:
-    score: float
-    reason: str
-    raw: dict[str, Any]
 
 
 class PointwiseJudge:

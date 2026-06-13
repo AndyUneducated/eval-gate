@@ -29,6 +29,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.core.errors import EvalGateError
 from evalgate.db.models import (
     EvalCaseRow,
     EvalCaseSetMembershipRow,
@@ -37,17 +38,25 @@ from evalgate.db.models import (
 from evalgate.eval_set import repository as set_repo
 
 
-class BadCaseNotFoundError(LookupError):
+class BadCaseNotFoundError(EvalGateError, LookupError):
     """Raised when promote() can't resolve eval_result -> eval_case."""
 
+    http_status = 404
+    exit_code = 1
+    slug = "badcase_not_found"
 
-class AlreadyPromotedError(ValueError):
+
+class AlreadyPromotedError(EvalGateError, ValueError):
     """Raised when the case is already a member of the target set.
 
     Covers both the "promoted twice into the same destination" case and
     the "tried to promote into the case's originating set" case — both
     are structurally the same after Phase 4.5.
     """
+
+    http_status = 409
+    exit_code = 1
+    slug = "already_promoted"
 
 
 def _new_id() -> str:

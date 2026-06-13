@@ -29,6 +29,15 @@ Subcommands:
         override the matching keys under `judge_policy:` in the YAML and
         are mainly used by `scripts/phase6_variance.py`.
 
+    evalgate run --eval-set <id-or-name> --prompt prompt.yaml --out report.json
+                 --gate-mode sequential --baseline-run <run_id>
+                 [--look-every 5] [--spending obf|pocock] [--mde 0.03] [--gamma 0.2]
+        Phase 15 sequential gate: stream the candidate against a stored baseline
+        run (paired by case_id) and stop early — FAIL via Lan-DeMets
+        alpha-spending, PASS via stochastic curtailment — to skip the remaining
+        judge calls. `--out` receives the GateReport JSON; exit code is the
+        gate verdict (0 pass / 1 fail / 2 error).
+
     evalgate badcase list --strategy {uncertainty|outlier|llm}
                           [--run <run_id>] [--limit 20] [--mock]
         Print the top-N badcases from eval_results. Output is a JSON array
@@ -67,13 +76,18 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.adversarial import repository as adversarial_repo
 from evalgate.badcase import finder as badcase_finder
 from evalgate.badcase import repository as badcase_repo
-from evalgate.core.schemas import TaskKind
+from evalgate.calibration import repository as calibration_repo
+from evalgate.core.config import get_settings, is_mock_llm
+from evalgate.core.errors import EvalGateError
+from evalgate.core.schemas import EvalCaseOut, EvalSetOut, HumanLabel, TaskKind
 from evalgate.db.session import SessionLocal
 from evalgate.eval_set import repository
 from evalgate.evaluator import runner as eval_runner
 from evalgate.gate.decision import build_gate_report
+from evalgate.report import sequential as seq_engine
 from evalgate.shadow import rollup as shadow_rollup
 
 
@@ -114,28 +128,13 @@ def _print(payload: Any) -> None:
 
 
 def _set_to_dict(row) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "name": row.name,
-        "description": row.description,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
+    # Reuse the API response model so the CLI and REST share one row->payload
+    # mapping (``mode="json"`` renders datetimes / enums as the CLI expects).
+    return EvalSetOut.model_validate(row).model_dump(mode="json")
 
 
 def _case_to_dict(row) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "task_type": row.task_type,
-        "input": row.input,
-        "expected": row.expected,
-        "tags": list(row.tags or []),
-        "retrieved_contexts": list(row.retrieved_contexts or []),
-        "expected_trajectory": list(row.expected_trajectory or []),
-        "source_trace_id": row.source_trace_id,
-        "source_span_id": row.source_span_id,
-        "created_at": row.created_at,
-    }
+    return EvalCaseOut.model_validate(row).model_dump(mode="json")
 
 
 def _parse_step_json(values: list[str]) -> list[dict[str, Any]]:
@@ -162,41 +161,48 @@ async def _with_session(fn: Callable[[AsyncSession], Awaitable[Any]]) -> Any:
         return await fn(session)
 
 
+def run_db_command(body: Callable[[AsyncSession], Awaitable[dict[str, Any]]]) -> int:
+    """Run an async DB-touching command body and print its result.
+
+    ``body`` returns the success payload dict (no status threading). Any
+    :class:`EvalGateError` it raises is mapped — in one place — to its declared
+    ``exit_code`` + ``{"error", "detail"}`` JSON, mirroring the API's single
+    exception handler. Returns 0 on success.
+    """
+    try:
+        payload = asyncio.run(_with_session(body))
+    except EvalGateError as exc:
+        _print(exc.payload())
+        return exc.exit_code
+    _print(payload)
+    return 0
+
+
 def _cmd_eval_set_create(args: argparse.Namespace) -> int:
-    async def run(session: AsyncSession):
+    async def body(session: AsyncSession):
         row = await repository.create_eval_set(
             session, name=args.name, description=args.description
         )
         return _set_to_dict(row)
 
-    _print(asyncio.run(_with_session(run)))
-    return 0
+    return run_db_command(body)
 
 
 def _cmd_eval_set_add(args: argparse.Namespace) -> int:
     task_type = TaskKind(args.task_type) if args.task_type else None
 
-    async def run(session: AsyncSession):
-        try:
-            set_id = await repository.resolve_set_id(session, args.set)
-            row = await repository.add_case_from_trace(
-                session,
-                set_id=set_id,
-                trace_id=args.from_trace,
-                extra_tags=list(args.tag or []),
-                task_type_override=task_type,
-            )
-            return _case_to_dict(row)
-        except repository.EvalSetNotFoundError as exc:
-            return {"error": "eval_set_not_found", "detail": str(exc)}
-        except repository.TraceNotFoundError as exc:
-            return {"error": "trace_not_found", "detail": str(exc)}
-        except repository.NoLLMSpanError as exc:
-            return {"error": "no_llm_span", "detail": str(exc)}
+    async def body(session: AsyncSession):
+        set_id = await repository.resolve_set_id(session, args.set)
+        row = await repository.add_case_from_trace(
+            session,
+            set_id=set_id,
+            trace_id=args.from_trace,
+            extra_tags=list(args.tag or []),
+            task_type_override=task_type,
+        )
+        return _case_to_dict(row)
 
-    result = asyncio.run(_with_session(run))
-    _print(result)
-    return 1 if isinstance(result, dict) and "error" in result else 0
+    return run_db_command(body)
 
 
 def _cmd_eval_set_add_rag(args: argparse.Namespace) -> int:
@@ -206,25 +212,20 @@ def _cmd_eval_set_add_rag(args: argparse.Namespace) -> int:
     still applies and now also carries any contexts ``case_extract`` recovers.
     """
 
-    async def run(session: AsyncSession):
-        try:
-            set_id = await repository.resolve_set_id(session, args.set)
-            row = await repository.add_case(
-                session,
-                set_id=set_id,
-                task_type=TaskKind.rag,
-                input={"question": args.question},
-                expected={"answer": args.answer},
-                tags=list(args.tag or []),
-                retrieved_contexts=list(args.context or []),
-            )
-            return _case_to_dict(row)
-        except repository.EvalSetNotFoundError as exc:
-            return {"error": "eval_set_not_found", "detail": str(exc)}
+    async def body(session: AsyncSession):
+        set_id = await repository.resolve_set_id(session, args.set)
+        row = await repository.add_case(
+            session,
+            set_id=set_id,
+            task_type=TaskKind.rag,
+            input={"question": args.question},
+            expected={"answer": args.answer},
+            tags=list(args.tag or []),
+            retrieved_contexts=list(args.context or []),
+        )
+        return _case_to_dict(row)
 
-    result = asyncio.run(_with_session(run))
-    _print(result)
-    return 1 if isinstance(result, dict) and "error" in result else 0
+    return run_db_command(body)
 
 
 def _cmd_eval_set_add_agent(args: argparse.Namespace) -> int:
@@ -236,86 +237,128 @@ def _cmd_eval_set_add_agent(args: argparse.Namespace) -> int:
         _print({"error": "trajectory_invalid", "detail": str(exc)})
         return 2
 
-    async def run(session: AsyncSession):
-        try:
-            set_id = await repository.resolve_set_id(session, args.set)
-            row = await repository.add_case(
-                session,
-                set_id=set_id,
-                task_type=TaskKind.agent,
-                input={"question": args.question},
-                expected={"answer": args.answer} if args.answer else None,
-                tags=list(args.tag or []),
-                expected_trajectory=expected_trajectory,
-            )
-            return _case_to_dict(row)
-        except repository.EvalSetNotFoundError as exc:
-            return {"error": "eval_set_not_found", "detail": str(exc)}
+    async def body(session: AsyncSession):
+        set_id = await repository.resolve_set_id(session, args.set)
+        row = await repository.add_case(
+            session,
+            set_id=set_id,
+            task_type=TaskKind.agent,
+            input={"question": args.question},
+            expected={"answer": args.answer} if args.answer else None,
+            tags=list(args.tag or []),
+            expected_trajectory=expected_trajectory,
+        )
+        return _case_to_dict(row)
 
-    result = asyncio.run(_with_session(run))
-    _print(result)
-    return 1 if isinstance(result, dict) and "error" in result else 0
+    return run_db_command(body)
 
 
 def _cmd_eval_set_show(args: argparse.Namespace) -> int:
-    async def run(session: AsyncSession):
-        try:
-            set_id = await repository.resolve_set_id(session, args.set)
-        except repository.EvalSetNotFoundError as exc:
-            return {"error": "eval_set_not_found", "detail": str(exc)}
+    async def body(session: AsyncSession):
+        set_id = await repository.resolve_set_id(session, args.set)
         set_row = await repository.get_eval_set(session, set_id)
-        cases = await repository.list_cases(session, set_id)
+        cases = await repository.list_cases(session, set_id, statuses=None)
         return {
             **_set_to_dict(set_row),
             "cases": [_case_to_dict(c) for c in cases],
         }
 
-    result = asyncio.run(_with_session(run))
-    _print(result)
-    return 1 if isinstance(result, dict) and "error" in result else 0
+    return run_db_command(body)
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """Run an eval set through (candidate LLM -> RubricJudge) and dump records."""
+    """Run an eval set; `fixed` dumps records, `sequential` renders a GateReport."""
+    if getattr(args, "gate_mode", "fixed") == "sequential":
+        return _cmd_run_sequential(args)
     from pydantic import ValidationError
     from yaml import YAMLError
 
-    async def run(session: AsyncSession):
-        try:
-            result = await eval_runner.run_eval(
-                session,
-                eval_set_id_or_name=args.eval_set,
-                prompt_path=str(args.prompt),
-                judge_model_override=args.judge_model,
-                k_override=args.k,
-                concurrency_override=args.concurrency,
-                policy_mode_override=args.policy_mode,
-                limit=args.limit,
-                mock=True if args.mock else None,
-            )
-        except repository.EvalSetNotFoundError as exc:
-            return {"_status": 1, "error": "eval_set_not_found", "detail": str(exc)}
-        except FileNotFoundError as exc:
-            return {"_status": 2, "error": "prompt_not_found", "detail": str(exc)}
-        except (ValidationError, YAMLError, ValueError) as exc:
-            return {"_status": 2, "error": "prompt_invalid", "detail": str(exc)}
-        return {
-            "_status": 0,
+    async def body(session: AsyncSession):
+        return await eval_runner.run_eval(
+            session,
+            eval_set_id_or_name=args.eval_set,
+            prompt_path=str(args.prompt),
+            judge_model_override=args.judge_model,
+            k_override=args.k,
+            concurrency_override=args.concurrency,
+            policy_mode_override=args.policy_mode,
+            limit=args.limit,
+            mock=True if args.mock else None,
+        )
+
+    try:
+        result = asyncio.run(_with_session(body))
+    except EvalGateError as exc:  # e.g. eval_set_not_found
+        _print(exc.payload())
+        return exc.exit_code
+    except FileNotFoundError as exc:
+        _print({"error": "prompt_not_found", "detail": str(exc)})
+        return 2
+    except (ValidationError, YAMLError, ValueError) as exc:
+        _print({"error": "prompt_invalid", "detail": str(exc)})
+        return 2
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    records = [r.model_dump() for r in result.records]
+    args.out.write_text(json.dumps({"records": records}, indent=2, default=_json_default))
+    _print(
+        {
             "run_id": result.run_id,
             "eval_set_id": result.eval_set_id,
             "total_cases": result.total_cases,
             "mean_score": result.mean_score,
-            "records": [r.model_dump() for r in result.records],
         }
+    )
+    return 0
 
-    payload = asyncio.run(_with_session(run))
-    status = payload.pop("_status")
-    if status == 0:
-        records = payload.pop("records")
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps({"records": records}, indent=2, default=_json_default))
-    _print(payload)
-    return status
+
+def _cmd_run_sequential(args: argparse.Namespace) -> int:
+    """`evalgate run --gate-mode sequential`: stream against a baseline, stop early.
+
+    Unlike fixed mode, `--out` receives the **GateReport JSON** (per-case records
+    still persist to the DB) and the exit code is the gate verdict
+    (0 pass / 1 fail / 2 error) — same convention as `evalgate gate` / phase12.
+    """
+    from pydantic import ValidationError
+    from yaml import YAMLError
+
+    from evalgate.gate import sequential as gate_seq
+
+    if not args.baseline_run:
+        _print({"error": "missing_baseline", "detail": "--baseline-run is required for sequential"})
+        return 2
+
+    async def body(session: AsyncSession):
+        return await gate_seq.run_sequential_gate(
+            session,
+            eval_set=args.eval_set,
+            prompt_path=str(args.prompt),
+            baseline_run_id=args.baseline_run,
+            look_every=args.look_every,
+            spending=args.spending,
+            mde=args.mde,
+            gamma=args.gamma,
+            judge_model_override=args.judge_model,
+            mock=True if args.mock else None,
+        )
+
+    try:
+        result = asyncio.run(_with_session(body))
+    except EvalGateError as exc:  # eval_set_not_found / sequential_unrunnable
+        _print(exc.payload())
+        return exc.exit_code
+    except FileNotFoundError as exc:
+        _print({"error": "prompt_not_found", "detail": str(exc)})
+        return 2
+    except (ValidationError, YAMLError, ValueError) as exc:
+        _print({"error": "prompt_invalid", "detail": str(exc)})
+        return 2
+
+    report = result.report
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(report.model_dump_json(indent=2))
+    _print({"run_id": result.run_id, "passed": report.passed, "summary": report.summary})
+    return 0 if report.passed else 1
 
 
 def _add_run_subcommand(parent: argparse._SubParsersAction) -> None:
@@ -358,6 +401,47 @@ def _add_run_subcommand(parent: argparse._SubParsersAction) -> None:
         help="Force litellm mock_response on all calls (CI / offline mode).",
     )
     run.add_argument("--limit", type=int, default=None, help="Cap cases evaluated (debug).")
+    run.add_argument(
+        "--gate-mode",
+        choices=["fixed", "sequential"],
+        default="fixed",
+        dest="gate_mode",
+        help=(
+            "fixed (default): judge every case, emit records JSON. "
+            "sequential: stream against --baseline-run and stop early, emit GateReport JSON."
+        ),
+    )
+    run.add_argument(
+        "--baseline-run",
+        default=None,
+        dest="baseline_run",
+        help="[sequential] eval_runs id to pair against (per case_id).",
+    )
+    run.add_argument(
+        "--look-every",
+        type=int,
+        default=seq_engine.DEFAULT_LOOK_EVERY,
+        dest="look_every",
+        help="[sequential] interim look cadence in cases (default 5).",
+    )
+    run.add_argument(
+        "--spending",
+        choices=["obf", "pocock"],
+        default=seq_engine.DEFAULT_SPENDING,
+        help="[sequential] alpha-spending function for the early-FAIL boundary.",
+    )
+    run.add_argument(
+        "--mde",
+        type=float,
+        default=seq_engine.DEFAULT_MDE,
+        help="[sequential] min detectable regression (score scale) for curtailment.",
+    )
+    run.add_argument(
+        "--gamma",
+        type=float,
+        default=seq_engine.DEFAULT_GAMMA,
+        help="[sequential] conditional-power threshold for early PASS (default 0.2).",
+    )
     run.set_defaults(func=_cmd_run)
 
 
@@ -365,6 +449,13 @@ _VALID_BADCASE_STRATEGIES = ("uncertainty", "outlier", "llm")
 
 
 def _cmd_badcase_list(args: argparse.Namespace) -> int:
+    calibrator = None
+    if getattr(args, "calibration", None):
+        calibrator = calibration_repo.load_calibrator(args.calibration)
+        if calibrator is None:
+            _print({"error": "calibration_not_found", "detail": args.calibration})
+            return 2
+
     async def run(session: AsyncSession):
         items = await badcase_finder.find(
             session,
@@ -372,6 +463,7 @@ def _cmd_badcase_list(args: argparse.Namespace) -> int:
             run_id=args.run,
             limit=args.limit,
             mock=bool(args.mock),
+            calibrator=calibrator,
         )
         return {"strategy": args.strategy, "items": [bc.to_dict() for bc in items]}
 
@@ -380,23 +472,15 @@ def _cmd_badcase_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_badcase_promote(args: argparse.Namespace) -> int:
-    async def run(session: AsyncSession):
-        try:
-            membership = await badcase_repo.promote_result_to_set(
-                session,
-                eval_result_id=args.result,
-                target_set_id_or_name=args.eval_set,
-                strategy=args.strategy,
-                extra_tags=list(args.tag or []),
-            )
-        except badcase_repo.BadCaseNotFoundError as exc:
-            return {"_status": 1, "error": "badcase_not_found", "detail": str(exc)}
-        except badcase_repo.AlreadyPromotedError as exc:
-            return {"_status": 1, "error": "already_promoted", "detail": str(exc)}
-        except repository.EvalSetNotFoundError as exc:
-            return {"_status": 1, "error": "eval_set_not_found", "detail": str(exc)}
+    async def body(session: AsyncSession):
+        membership = await badcase_repo.promote_result_to_set(
+            session,
+            eval_result_id=args.result,
+            target_set_id_or_name=args.eval_set,
+            strategy=args.strategy,
+            extra_tags=list(args.tag or []),
+        )
         return {
-            "_status": 0,
             "id": membership.id,
             "eval_case_id": membership.eval_case_id,
             "eval_set_id": membership.eval_set_id,
@@ -406,10 +490,7 @@ def _cmd_badcase_promote(args: argparse.Namespace) -> int:
             "created_at": membership.created_at,
         }
 
-    payload = asyncio.run(_with_session(run))
-    status_code = payload.pop("_status")
-    _print(payload)
-    return status_code
+    return run_db_command(body)
 
 
 def _add_badcase_subcommands(parent: argparse._SubParsersAction) -> None:
@@ -437,6 +518,15 @@ def _add_badcase_subcommands(parent: argparse._SubParsersAction) -> None:
         action="store_true",
         default=False,
         help="Force litellm mock for the `llm` strategy (CI / offline).",
+    )
+    lst.add_argument(
+        "--calibration",
+        default=None,
+        help=(
+            "[uncertainty] path to calibration_params.json. When given, rank by "
+            "calibrated uncertainty (closeness of P(good) to 0.5) instead of raw "
+            "judge_confidence (Phase 16)."
+        ),
     )
     lst.set_defaults(func=_cmd_badcase_list)
 
@@ -547,6 +637,225 @@ def _add_shadow_subcommands(parent: argparse._SubParsersAction) -> None:
     rollup.set_defaults(func=_cmd_shadow_rollup)
 
 
+def _cmd_adversarial_generate(args: argparse.Namespace) -> int:
+    use_mock = bool(args.mock) or is_mock_llm()
+    model = args.model or get_settings().adversarial_generator_model
+
+    async def body(session: AsyncSession):
+        created = await adversarial_repo.generate_into_set(
+            session,
+            set_id_or_name=args.set,
+            tag=args.tag,
+            k=args.k,
+            model=model,
+            mock=use_mock,
+        )
+        return {
+            "tag": args.tag,
+            "requested": args.k,
+            "created": [_case_to_dict(c) for c in created],
+        }
+
+    return run_db_command(body)
+
+
+def _cmd_adversarial_review(args: argparse.Namespace) -> int:
+    if not (args.approve or args.reject):
+        # No decision given -> just list pending cases for review.
+        async def list_body(session: AsyncSession):
+            pending = await adversarial_repo.list_pending(session, set_id_or_name=args.set)
+            return {"pending": [_case_to_dict(c) for c in pending]}
+
+        return run_db_command(list_body)
+
+    decision = "approve" if args.approve else "reject"
+    case_id = args.approve or args.reject
+
+    async def body(session: AsyncSession):
+        row = await adversarial_repo.review_case(session, case_id=case_id, decision=decision)
+        return _case_to_dict(row)
+
+    return run_db_command(body)
+
+
+def _cmd_adversarial_stats(args: argparse.Namespace) -> int:
+    async def body(session: AsyncSession):
+        result = await adversarial_repo.stats(
+            session, set_id_or_name=args.set, threshold=args.threshold
+        )
+        return result.to_dict()
+
+    return run_db_command(body)
+
+
+def _add_adversarial_subcommands(parent: argparse._SubParsersAction) -> None:
+    adversarial = parent.add_parser(
+        "adversarial",
+        help="Auto-generate red-team cases for a weak tag and review them (Phase 14).",
+    )
+    sub = adversarial.add_subparsers(dest="adversarial_cmd", required=True)
+
+    generate = sub.add_parser(
+        "generate",
+        help="Synthesize K pending adversarial cases for a tag in a set.",
+    )
+    generate.add_argument("--set", required=True, help="eval set id (UUID hex) or name")
+    generate.add_argument("--tag", required=True, help="the weak tag to attack")
+    generate.add_argument("--k", type=int, default=10, help="number of cases to generate")
+    generate.add_argument(
+        "--model",
+        default=None,
+        help="Override the generator model (default: settings.adversarial_generator_model).",
+    )
+    generate.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help="Force deterministic offline generation (CI / offline).",
+    )
+    generate.set_defaults(func=_cmd_adversarial_generate)
+
+    review = sub.add_parser(
+        "review",
+        help="List pending adversarial cases, or approve/reject one by id.",
+    )
+    review.add_argument("--set", required=True, help="eval set id (UUID hex) or name")
+    review.add_argument("--approve", default=None, help="case id to approve (-> active)")
+    review.add_argument("--reject", default=None, help="case id to reject (-> archived)")
+    review.set_defaults(func=_cmd_adversarial_review)
+
+    stats = sub.add_parser(
+        "stats",
+        help="Hit-rate report over approved adversarial cases (hit = score < threshold).",
+    )
+    stats.add_argument("--set", required=True, help="eval set id (UUID hex) or name")
+    stats.add_argument(
+        "--threshold",
+        type=float,
+        default=adversarial_repo.DEFAULT_HIT_THRESHOLD,
+        help="absolute score below which a case counts as a hit (default 0.5).",
+    )
+    stats.set_defaults(func=_cmd_adversarial_stats)
+
+
+def _cmd_calibration_label(args: argparse.Namespace) -> int:
+    async def body(session: AsyncSession):
+        row = await calibration_repo.add_label(
+            session,
+            eval_result_id=args.result,
+            label=args.label,
+            annotator=args.annotator,
+            note=args.note,
+        )
+        return {
+            "id": row.id,
+            "eval_result_id": row.eval_result_id,
+            "label": row.label,
+            "annotator": row.annotator,
+        }
+
+    return run_db_command(body)
+
+
+def _cmd_calibration_fit(args: argparse.Namespace) -> int:
+    out = args.out or get_settings().calibration_params_path
+
+    async def body(session: AsyncSession):
+        return await calibration_repo.fit_and_save(session, params_path=out, run_id=args.run)
+
+    try:
+        report = asyncio.run(_with_session(body))
+    except EvalGateError as exc:  # insufficient_labels
+        _print(exc.payload())
+        return exc.exit_code
+    _print(
+        {
+            "params_path": out,
+            "n": report.n,
+            "temperature": report.temperature,
+            "ece_before": report.ece_before,
+            "ece_after": report.ece_after,
+            "mce_before": report.mce_before,
+            "mce_after": report.mce_after,
+        }
+    )
+    return 0
+
+
+def _cmd_calibration_report(args: argparse.Namespace) -> int:
+    params_path = args.params or get_settings().calibration_params_path
+    calibrator = calibration_repo.load_calibrator(params_path)
+
+    async def body(session: AsyncSession):
+        return await calibration_repo.compute_report(
+            session, calibrator=calibrator, run_id=args.run
+        )
+
+    try:
+        report, stats = asyncio.run(_with_session(body))
+    except EvalGateError as exc:  # insufficient_labels
+        _print(exc.payload())
+        return exc.exit_code
+    if args.plot:
+        from evalgate.report.calibration import render_reliability_png
+
+        render_reliability_png(stats, args.plot)
+    out = report.model_dump()
+    if args.plot:
+        out["plot"] = args.plot
+    _print(out)
+    return 0
+
+
+def _add_calibration_subcommands(parent: argparse._SubParsersAction) -> None:
+    calibration = parent.add_parser(
+        "calibration",
+        help="Calibrate judge scores against human labels (ECE + temperature scaling, Phase 16).",
+    )
+    sub = calibration.add_subparsers(dest="calibration_cmd", required=True)
+
+    label = sub.add_parser("label", help="Attach a human good/bad label to an eval_result.")
+    label.add_argument("--result", required=True, help="eval_result_id (from `badcase list`).")
+    label.add_argument(
+        "--label",
+        required=True,
+        choices=[v.value for v in HumanLabel],
+        help="human verdict: good (-> 1) / bad (-> 0).",
+    )
+    label.add_argument("--annotator", default="human", help="who labeled it (audit).")
+    label.add_argument("--note", default=None, help="optional free-text note.")
+    label.set_defaults(func=_cmd_calibration_label)
+
+    fit = sub.add_parser(
+        "fit",
+        help="Fit a temperature on labeled results and write calibration_params.json.",
+    )
+    fit.add_argument("--run", default=None, help="restrict to one eval_run (default: all).")
+    fit.add_argument(
+        "--out",
+        default=None,
+        help="params path (default: settings.calibration_params_path).",
+    )
+    fit.set_defaults(func=_cmd_calibration_fit)
+
+    report = sub.add_parser(
+        "report",
+        help="Print ECE/MCE before vs after + optional reliability-diagram PNG.",
+    )
+    report.add_argument("--run", default=None, help="restrict to one eval_run (default: all).")
+    report.add_argument(
+        "--params",
+        default=None,
+        help="params path to apply (default: settings path; ephemeral fit if absent).",
+    )
+    report.add_argument(
+        "--plot",
+        default=None,
+        help="write a reliability diagram PNG to this path (needs matplotlib).",
+    )
+    report.set_defaults(func=_cmd_calibration_report)
+
+
 def _add_eval_set_subcommands(parent: argparse._SubParsersAction) -> None:
     eval_set = parent.add_parser("eval-set", help="Manage eval sets and cases.")
     sub = eval_set.add_subparsers(dest="eval_set_cmd", required=True)
@@ -641,6 +950,8 @@ def main(argv: list[str] | None = None) -> int:
     _add_eval_set_subcommands(sub)
     _add_run_subcommand(sub)
     _add_badcase_subcommands(sub)
+    _add_adversarial_subcommands(sub)
+    _add_calibration_subcommands(sub)
     _add_shadow_subcommands(sub)
 
     args = parser.parse_args(argv)
