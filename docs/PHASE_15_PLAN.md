@@ -1,109 +1,118 @@
-# Phase 15 技术方案 · Sequential Gate（边跑边判，省 judge 调用）
-
-> 对应 [ROADMAP.md](./ROADMAP.md) Phase 15。预估 1 人天 vibe coding。
-
-**状态**：DONE（新增 `evalgate.report.sequential` 纯统计引擎 + `evalgate.gate.sequential` 编排；`evalgate run --gate-mode sequential` 子模式；`GateReport` 加 `sequential` 块 + `SequentialReport`/`SequentialLook` schema；无 migration——baseline 直接复用已有 `eval_results`；新增 5 个测试文件含 1000 次 Monte Carlo 验证 Type-I/power/省调用 + phase15 离线 smoke；全量绿 + lint/format 通过）
-
----
+# Sequential Gate · 边跑边判，省 judge 调用
 
 ## 一句话
 
-CI gate 不再等 N 条 case 全判完才出结论：候选 prompt 与"已存 baseline run"**按 case_id 配对**，边跑边在固定间隔"看一眼"——证据足够坏就 **alpha-spending 边界提前 FAIL**，足够好就 **stochastic curtailment 提前 PASS**，于是明显回归 / 明显没问题的候选都能跳过剩下那些贵的 judge 调用，同时把累积误判率（false-fail）锁在 `alpha = 0.05`。
+CI gate 不必等 N 条 case 全判完才出结论：候选 prompt 与"已存 baseline run"**按 `case_id` 配对**，边跑边在固定间隔"看一眼"——证据足够坏就 **α-spending（误差消耗函数，控制多次窥视下的累积 Type-I error）边界提前 FAIL**，足够好就 **stochastic curtailment（随机截断，条件功效过低则提前判 futile）提前 PASS**。于是明显回归 / 明显没问题的候选都能跳过剩下那些贵的 judge 调用，同时把累积误判率（false-fail）锁在 `α = 0.05`。
 
-## 已确认的两个设计决策
-
-1. **sequential 决策只跑 quality 一个轴**：每次 judge 调用驱动 quality 分数；cost / latency_p95 / safety 很便宜，在停止点对"已消费的 case"做一次固定-N 快照即可——不值得为它们做 sequential。
-2. **提前 PASS 用 stochastic curtailment**（而非 beta-spending / 简单启发式）：curtailment 只会"缩短"运行、永远不会触发 FAIL，所以 Type-I 完全不受影响，控制最干净。
-
-提前 FAIL 边界一律用 **alpha-spending（Lan-DeMets）**。无向后兼容约束——直接加字段 / flag。
+这是一种 **sequential testing（序贯检验，边收集数据边判定、证据足够就提前停）**——与固定样本量检验的区别是它允许多次"中途窥视"（interim look），代价是窥视会膨胀假阳率，所以必须用 α-spending 把它压回去。
 
 ## 统计设计（核心）
 
-baseline 与 candidate 跑同一 eval set 的 active case（按 `created_at` 排序），所以做的是 **paired test**——比固定-N gate 的双样本 bootstrap 更有功效，因为 case 一一对应。
+baseline 与 candidate 跑同一 eval set 的同一批 active case（按 `created_at` 排序），所以做的是 **paired test（配对检验）**——比固定-N gate 的双样本 bootstrap 更有功效，因为同一条 case 一一对应，配对消掉了 case 本身的难度方差。
 
-- 每条 case `d_i = candidate_score_i - baseline_score_i`。quality 越高越好，所以**回归 = 负 drift**。
-- 每 `look_every` 条 case 看一次，第 k 次在 `n_k`；信息分数 `t_k = n_k / N_max`（`N_max` = 配对 active case 数，开跑前已知）。
-- 单边统计量 `Z_k = sqrt(n_k) * mean(d) / sd(d)`；换到 B-value 尺度 `B(t_k) = Z_k * sqrt(t_k)`，在 H0 下是带独立增量的布朗运动——正是边界递归所需。
-- **alpha-spending 失败边界**：spending 函数 `alpha*(t)`（`alpha*(0)=0`、`alpha*(1)=0.05`、单调）。提供 `obf`：`alpha*(t)=2(1-Phi(z_{a/2}/sqrt(t)))`（早期几乎不花，最严）与 `pocock`：`alpha*(t)=a*ln(1+(e-1)t)`（花得更均匀）。增量花费 `pi_k = alpha*(t_k)-alpha*(t_{k-1})`；用 Armitage-McPherson-Rowe 递归（numpy 网格 + 正态增量卷积 + cumsum 定位）求"在前面都没越界的前提下、这一看恰好花掉 `pi_k`"的下边界 `l_k`，`z_fail_k = l_k/sqrt(t_k)`。
-- **stochastic curtailment 提前 PASS**：给定当前 `B(t_k)=b` 与最坏可容忍 drift `mu_alt = -sqrt(N_max)*mde/sd`（`mde` 来自 `--mde`，默认 0.03 分数尺度），"到 t=1 还能越过最终边界 `l_K`"的条件功效 `CP = Phi((l_K - b - mu_alt*(1-t_k)) / sqrt(1-t_k))`。`CP < gamma`（默认 0.2）→ 提前 PASS。这只缩短运行、不会造成 FAIL，所以 Type-I 不变。
-- 每次 look 的判定：`Z_k <= z_fail_k` → FAIL；否则 `CP < gamma` → PASS；否则 CONTINUE。`t=1` 时只要没 FAIL → PASS。
-- 守卫：`n<2` 或 `sd==0` 退化处理（`sd==0` 且 mean<0 视作铁证 FAIL，mean>=0 则 CONTINUE 到耗尽再 PASS）；baseline 缺该 case 分数的，不参与配对。
+- 每条 case 取差值 `d_i = candidate_score_i - baseline_score_i`。quality 越高越好，所以**回归 = 负 drift（漂移）**。
+- 每 `look_every` 条 case 看一次，第 k 次落在 `n_k`；**information fraction（信息分数）** `t_k = n_k / N_max`（`N_max` = 配对 active case 数，开跑前已知）。
+- 单边统计量 `Z_k = sqrt(n_k) · mean(d) / sd(d)`；换到 **B-value 尺度** `B(t_k) = Z_k · sqrt(t_k)`。在 H0 下 `B(t)` 是带独立增量的 **Brownian motion（布朗运动近似）**——正是边界递归所需的性质（增量独立、方差随 t 线性增长）。
 
-只有 numpy（无 scipy），所以 `Phi` 用 `math.erf`、`Phi^-1` 用 Acklam 有理逼近自实现。
+### 提前 FAIL：α-spending 边界
+
+**α-spending** 的核心直觉：把总预算 `α = 0.05` 当成一笔钱，分摊到每次窥视。第 k 次只允许花掉增量 `π_k = α*(t_k) − α*(t_{k-1})`，累积花费到 `t=1` 恰好等于 `α`，于是无论看多少次，累积 Type-I error 都不超 `α`。
+
+两类常用的花费函数（**Lan-DeMets** 框架下）：
+
+- **O'Brien-Fleming（OBF）**：`α*(t) = 2(1 − Φ(z_{α/2}/sqrt(t)))`。早期几乎不花预算 → 早看极严、几乎不会误杀，把钱留到末期；默认选它。
+- **Pocock**：`α*(t) = α·ln(1 + (e−1)t)`。预算花得更均匀 → 早期就肯下结论，但小样本下略激进。
+
+求边界用 **Armitage-McPherson-Rowe 递归**：在 B-value 网格上传播 H0 联合密度（numpy 网格 + 正态增量卷积 + cumsum 定位），找"在前面都没越界的前提下、这一看恰好花掉 `π_k`"的下边界 `l_k`，再换回 Z 尺度 `z_fail_k = l_k/sqrt(t_k)`。`Z_k ≤ z_fail_k` → FAIL。
+
+### 提前 PASS：stochastic curtailment
+
+**conditional power（条件功效）** 回答的是："以现在的证据，到 t=1 还有多大概率会越过失败边界？" 给定当前 `B(t_k)=b` 与最坏可容忍 drift `μ_alt = −sqrt(N_max)·mde/sd`（`mde` 来自 `--mde`，默认 0.03 分数尺度）：
+
+`CP = Φ((l_K − b − μ_alt·(1−t_k)) / sqrt(1−t_k))`
+
+若 `CP < γ`（默认 0.2），说明哪怕真有 MDE 大小的回归，现在也几乎不可能再失败 → 继续是徒劳（futile）→ 提前 PASS。
+
+关键性质：**curtailment 只会"缩短"运行、永远不会触发 FAIL**，所以它对 Type-I error 完全没有影响——这把"省调用"与"误判控制"两件事彻底解耦。
+
+### 每次 look 的判定与守卫
+
+- 判定优先级：`Z_k ≤ z_fail_k` → FAIL；否则 `CP < γ` → PASS；否则 CONTINUE。`t=1` 时只要没 FAIL → PASS（最终一定给结论）。
+- 守卫：`n<2` 或 `sd==0` 退化处理（`sd==0` 且 mean<0 视作铁证 FAIL，mean≥0 则 CONTINUE 到耗尽再 PASS）；baseline 缺该 case 分数的，不参与配对（被静默排除）。
+- 环境只有 numpy（无 scipy），所以 `Φ`（normal CDF）用 `math.erf`、`Φ⁻¹`（inverse CDF）用 Acklam 有理逼近自实现。
+
+### 决策流
 
 ```mermaid
 flowchart TD
-  Base["baseline run (eval_results) -> {case_id: score}"] --> Pair
-  Cand["candidate iter_eval (stream EvalRecord)"] --> Pair["pair by case_id -> d_i"]
-  Pair --> Look{"every look_every cases"}
-  Look -->|"Z_k <= z_fail_k"| Fail["FAIL early"]
-  Look -->|"conditional power < gamma"| Pass["PASS early"]
-  Look -->|else| Cont["CONTINUE (next case)"]
+  Base["baseline run (eval_results)<br/>{case_id: score}"] --> Pair
+  Cand["candidate iter_eval<br/>(stream EvalRecord)"] --> Pair["pair by case_id<br/>d_i = cand - base"]
+  Pair --> Look{"每 look_every 条<br/>看一眼"}
+  Look -->|"Z_k <= z_fail_k<br/>(alpha-spending 下边界)"| Fail["FAIL early"]
+  Look -->|"conditional power < gamma<br/>(stochastic curtailment)"| Pass["PASS early"]
+  Look -->|"else"| Cont["CONTINUE → 下一条"]
   Cont --> Look
-  Fail --> Stop["stop draining: skip remaining judge calls"]
+  Fail --> Stop["停止抽取<br/>跳过剩余 judge 调用"]
   Pass --> Stop
-  Stop --> Report["GateReport: quality verdict=sequential; cost/latency/safety=snapshot over consumed cases"]
+  Stop --> Report["GateReport: quality 轴判定 = sequential<br/>cost/latency/safety = 已消费 case 上的固定-N 快照"]
+```
+
+两类边界各管一端，下图是 B-value 走廊的直觉：
+
+```mermaid
+flowchart LR
+  subgraph accum["信息累积 t: 0 → 1"]
+    A["t 小：OBF 下边界很低<br/>(早看极严, 基本不误杀)"] --> B["t 中：边界抬升<br/>跨下边界 ⇒ early FAIL"]
+    B --> C["t→1：边界收紧到 l_K<br/>累积 alpha 恰好 0.05"]
+  end
+  D["curtailment: CP < gamma<br/>(任意 look 都可触发)"] -->|"只缩短运行<br/>不影响 Type-I"| E["early PASS"]
 ```
 
 ## 为什么 sequential 用 paired+parametric，快照仍用 bootstrap
 
 sequential 决策需要"每来一条就能更新、且增量独立"的统计量——配对 t 统计量的布朗运动近似天然满足，而双样本 bootstrap 既无法增量、又不利用配对功效。停止点的 cost/latency/safety 快照不需要 sequential 性质，沿用既有 `build_gate_report` 的 bootstrap 即可，保持与固定-N gate 完全一致的数字与归因。
 
-## 模块布局（沿用 report/ = 纯统计、gate/ = 编排 的分层）
+## 技术选型与抉择
 
-- 新建 [src/evalgate/report/sequential.py](../src/evalgate/report/sequential.py) —— 纯引擎，无 DB/LLM：spending 函数、`norm_cdf`/`norm_ppf`、`compute_fail_boundaries(t, spending)`（Lan-DeMets 递归）、`conditional_power(...)`、有状态 `SequentialGate`（`.update(diff) -> Decision`）、以及供 Monte Carlo + smoke 复用的回放 `evaluate_sequential(baseline, candidate, *, look_every, spending, mde, gamma)`。
-- 新建 [src/evalgate/gate/sequential.py](../src/evalgate/gate/sequential.py) —— `run_sequential_gate(...)`：经 [judge/persistence.py](../src/evalgate/judge/persistence.py) `list_results` 载入 baseline，解析 `N_max`，驱动 [evaluator/runner.py](../src/evalgate/evaluator/runner.py) 的 `iter_eval`（`record_stream` 可注入便于测试），喂 gate，一旦终态就 break（真正跳过剩余 judge 调用），最后用 [gate/decision.py](../src/evalgate/gate/decision.py) 的 `build_gate_report` 在"已消费 case"上算 cost/latency/safety + 归因，再用 sequential 决策**覆盖 quality 轴判定**（权威）并挂上 sequential 块。`passed = sequential==PASS 且 非 quality 轴全过`。
+> 见 [DECISIONS.md](../DECISIONS.md) ADR-012。下面是面试视角的"岔路 → 选择 → 代价"。
 
-## Schema（无 migration——baseline 来自既有 eval_results）
+| 岔路 | 选择 | 备选 | 为什么 / 代价 |
+| --- | --- | --- | --- |
+| 用什么检验 | **paired 参数检验**（对差值 `d_i` 做单边检验） | 沿用固定-N 的双样本 bootstrap | 同一组 case 一一对应，配对消掉 case 难度方差、功效更高；配对 t 统计量的布朗运动近似满足"每来一条独立更新"，而 bootstrap 既不增量也不利用配对——序贯场景下配对参数检验才是对的工具。 |
+| early-FAIL 边界 | **Lan-DeMets α-spending**（OBF 默认 / Pocock） | 固定阈值多看、Bonferroni 校正 | α-spending 是"序贯多看不抬 Type-I"的标准答案：累积花费恰好 0.05；固定阈值多看会让假阳率随窥视次数膨胀，Bonferroni 又过保守、损失功效。 |
+| early-PASS 机制 | **stochastic curtailment**（条件功效 < γ → futile） | beta-spending、简单启发式 | curtailment 只缩短运行、永不触发 FAIL，所以 Type-I 完全不受 PASS 边界影响，把省调用与误判控制解耦；beta-spending 会与 α 边界耦合，实现与论证都更重。 |
+| 序贯覆盖哪些轴 | **只 quality 一个轴** | 多轴都序贯 | 每次 judge 调用驱动的就是 quality 分数，省调用的杠杆全在这里；cost/latency/safety 计算便宜、不值得序贯，停止点对已消费 case 做固定-N 快照即可，并复用 `build_gate_report` 保证数字与固定-N gate 一致。 |
+| 数值依赖 | **自实现 `norm_cdf`/`norm_ppf`** | 引入 scipy | 环境只有 numpy；`Φ` 用 `math.erf`、`Φ⁻¹` 用 Acklam 有理逼近（误差 <1.2e-9），省一个重依赖。 |
+
+**已知代价（小样本注脚）**：正态边界是对 t 分布的近似，小 n 时略激进。Pocock 把预算前置到最早几次 look，`n=5` 时实测 Type-I ~0.08（略超 0.05）；故默认推荐 OBF，Pocock 的 Type-I 验证用首看 `n=10` 的现实间隔。这是"用正态边界近似 t 分布"的固有代价。
+
+## 模块布局（沿用 `report/` = 纯统计、`gate/` = 编排 的分层）
+
+- [src/evalgate/report/sequential.py](../src/evalgate/report/sequential.py) —— 纯引擎，无 DB/LLM：spending 函数、`norm_cdf`/`norm_ppf`、`compute_fail_boundaries(t, spending)`（Lan-DeMets 递归）、`conditional_power(...)`、有状态 `SequentialGate`（`.update(diff) -> Decision`），以及供回放复用的 `evaluate_sequential(baseline, candidate, *, look_every, spending, mde, gamma)`。
+- [src/evalgate/gate/sequential.py](../src/evalgate/gate/sequential.py) —— `run_sequential_gate(...)`：经 [judge/persistence.py](../src/evalgate/judge/persistence.py) `list_results` 载入 baseline，解析 `N_max`，驱动 [evaluator/runner.py](../src/evalgate/evaluator/runner.py) 的 `iter_eval`，喂 gate，一旦终态就 break（真正跳过剩余 judge 调用），最后用 [gate/decision.py](../src/evalgate/gate/decision.py) 的 `build_gate_report` 在"已消费 case"上算 cost/latency/safety + 归因，再用 sequential 决策**覆盖 quality 轴判定**（权威）。`passed = sequential==PASS ∧ 非 quality 轴全过`。
+
+分层动机：`report/` 是可单测的纯函数（喂 seeded 合成数据即可验证统计性质），`gate/` 只做 DB/LLM 编排——统计正确性的证明不依赖任何外部副作用。
+
+## Schema（无 migration——baseline 复用既有 `eval_results`）
 
 [src/evalgate/core/schemas.py](../src/evalgate/core/schemas.py)：加 `SequentialLook`（`look, n, information_fraction, z, z_fail, conditional_power, decision`）与 `SequentialReport`（`decision, stopped_early, cases_consumed, n_max, spending, mde, gamma, looks`）；`GateReport` 加 `sequential: SequentialReport | None = None`。
 
 ## CLI（`evalgate run --gate-mode sequential`）
 
-[cli.py](../src/evalgate/cli.py)：`run` 加 `--gate-mode {fixed,sequential}`（默认 `fixed`，原行为不变）。`sequential` 下必填 `--baseline-run`；可选 `--look-every`(5) / `--spending {obf,pocock}`(obf) / `--mde`(0.03) / `--gamma`(0.2)。此时 `--out` 收到 **GateReport JSON**（per-case 记录照常落库），进程退出码即 gate 判定（`0` pass / `1` fail / `2` error）——与 `evalgate gate` / phase12 同约定。
-
-## 启动方式
+[cli.py](../src/evalgate/cli.py)：`run` 加 `--gate-mode {fixed,sequential}`（默认 `fixed`，原行为不变）。`sequential` 下必填 `--baseline-run`；可选 `--look-every`(5) / `--spending {obf,pocock}`(obf) / `--mde`(0.03) / `--gamma`(0.2)。`--out` 收到 **GateReport JSON**（per-case 记录照常落库），进程退出码即 gate 判定（`0` pass / `1` fail / `2` error）。
 
 ```bash
-# 离线合成 smoke：回归候选 -> 提前 FAIL；干净候选 -> 提前 PASS；打印省调用比例
-make sequential-smoke
+# 先跑一个 baseline，记下输出里的 run_id
+evalgate run --eval-set billing --prompt baseline.yaml --out base.json
 
-# 真实流程（先跑一个 baseline，再用 sequential 模式跑候选）
-evalgate run --eval-set billing --prompt baseline.yaml  --out base.json
-#   ^ 记下输出里的 run_id
+# 再用 sequential 模式跑候选
 evalgate run --eval-set billing --prompt candidate.yaml --out report.json \
     --gate-mode sequential --baseline-run <run_id> --look-every 5 --spending obf
 echo $?   # 0 pass / 1 fail / 2 error
 ```
 
-## 退出标准达成（与 ROADMAP 对齐）
+## 验证策略
 
-Monte Carlo（1000 次/场景，见 [tests/test_sequential_montecarlo.py](../tests/test_sequential_montecarlo.py)）：
+统计正确性靠 **Monte Carlo（1000 次/场景）**证明而非肉眼：无 drift 时累积 false-fail ≈ 0.05（Type-I 受控），drift ≤ −mde 时 power ≥ 0.8 且平均省调用 ≥ 50%，干净候选 ≥90% 提前 PASS。这些是 load-bearing 的断言，不是装饰。
 
-- **Type-I 受控**：无 drift 时累积 false-fail ≈ 0.05（OBF look_every=5 实测 ~0.05）。
-- **有功效**：drift ≤ -mde（-0.10）时 power ≥ 0.8，且平均消费 ≤ 0.5·N_max（≥50% 省调用）。
-- **干净候选**：≥90% 提前 PASS，≥50% 省调用。
-
-`make sequential-smoke` 输出（节选）：
-
-```
-[regressed] decision=fail consumed=15/60 savings=75%
-[clean]     decision=pass consumed=25/60 savings=58%
-OK: sequential gate stops early on both regression and clean candidates
-```
-
-## 测试矩阵
-
-- [tests/test_sequential_spending.py](../tests/test_sequential_spending.py) — `alpha*(0)=0`/`alpha*(1)=0.05`/单调；边界递归累积花费 == alpha；OBF 早期比 Pocock 更严、末期更松；`norm_cdf`/`norm_ppf` round-trip；零花费 look 不触发。
-- [tests/test_sequential_gate.py](../tests/test_sequential_gate.py) — 手搓流的判定逻辑：明显回归 → 提前 FAIL（`cases_consumed < n_max`）；干净 → curtailment 提前 PASS；零方差 / 退化守卫；耗尽 → PASS；`update` 在非 look 点返回 None；`look_every > N` 单 look。
-- [tests/test_sequential_montecarlo.py](../tests/test_sequential_montecarlo.py) — 上述 Type-I / power / 省调用三组 + Pocock 也控 Type-I（现实间隔下）。
-- [tests/test_sequential_runner.py](../tests/test_sequential_runner.py) — seed baseline run + 注入合成 candidate 流驱动 `run_sequential_gate`：回归提前停、`report.sequential` 落位、quality 轴 FAIL；干净 PASS；无 baseline 分数的 case 不参与配对；缺 baseline run 抛错；`evalgate run --gate-mode sequential` CLI 端到端退出码。
-- [scripts/phase15_sequential_smoke.py](../scripts/phase15_sequential_smoke.py) 注册进 [tests/test_smokes.py](../tests/test_smokes.py)，CI 跑其断言。
-
-## 不在 Phase 15 范围
-
-- 多轴 sequential（cost/latency 保持固定-N 快照）。
-- 有约束力的 beta-spending futility 边界。
-- shadow mode 的 sequential。
-- judge 校准（Phase 16）。
-- demo 录屏（Phase 17）。
+> 离线说明：mock judge 恒返 0.5（零方差）使统计 demo 跑不起来，所以 smoke 直接驱动纯引擎、喂 seeded 正态合成的 `(score, score)` 对——这正是真实配对的形状。

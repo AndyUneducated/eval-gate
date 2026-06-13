@@ -1,240 +1,123 @@
-# Phase 7 技术方案 · BadCase Finder（uncertainty + outlier + llm）
-
-> 对应 [ROADMAP.md](ROADMAP.md) Phase 7。预估 1 人天 vibe coding。
-> 完成后只更新顶部状态行 + 在 [JOURNAL.md](../JOURNAL.md) 记里程碑。
-
-**状态**：DONE（含 Phase 7.5 refactor：promote 改 membership 表，见文末「Phase 7.5 后置 refactor」）。数据源选 A（仅 `eval_results`）。
-
----
+# Phase 7 技术方案 · BadCase Finder（主动学习的第一步）
 
 ## 一句话
 
-跑完 evalgate run 之后，从 `eval_results` 里**自动捞出最值得加进 eval_set 的 case**：判官（judge）最不确定的（uncertainty）、跑得最贵 / 最慢的（outlier）、便宜模型一眼能看出"微妙错误"的（llm）。捞出来一行 `evalgate badcase promote ...` 挂到目标 eval_set，丰富回归（regression）基线。
+跑完 `evalgate run` 之后，从 `eval_results` 里**自动捞出最值得加进 eval_set 的 case**，再用一行 `evalgate badcase promote ...` 把它挂到目标 eval_set，让回归（regression，回归测试）基线越用越强。这是把「一次性评测」升级成 active learning（主动学习，让模型/系统主动挑选最有价值的样本来标注与学习）闭环的第一步。
 
-## 数据流
+三条互补的挑选策略：
+
+- **uncertainty sampling（不确定性采样，主动学习里优先选模型最没把握的样本）**：判官（judge）打分时 `judge_confidence` 最低的 case。
+- **outlier（离群点）**：已知坏（score=0 / safety 命中）或长尾（latency/cost 超 p95）的 case。
+- **llm**：让一个便宜模型（cheap model）二次筛选，专挑「看起来对、其实微妙错」的 subtle-bad case。
+
+## 整体架构与数据流
 
 ```mermaid
 flowchart LR
-  Results[("eval_results<br/>(Phase 5/6 落库)")]
-  Finder["BadCaseFinder<br/>3 策略排序"]
+  Results[("eval_results<br/>(Phase 5/6 落库:<br/>score / judge_confidence<br/>/ latency / cost / axis_breakdown)")]
+  Finder["BadCaseFinder<br/>(3 策略排序)"]
   U["uncertainty<br/>judge_confidence 最低"]
   O["outlier<br/>score=0 / safety / p95 长尾"]
-  L["llm<br/>cheap model 二筛"]
-  Promote["promote_result_to_set<br/>(挂 membership)"]
+  L["llm<br/>cheap model 二筛 subtle-bad"]
+  Promote["promote_result_to_set<br/>(写一条 membership)"]
   Target["目标 eval_set<br/>(更强的回归基线)"]
 
   Results --> Finder
-  Finder --> U
-  Finder --> O
-  Finder --> L
-  U --> Promote
-  O --> Promote
-  L --> Promote
+  Finder --> U & O & L
+  U & O & L -->|"人工 review 后<br/>手动 promote"| Promote
   Promote --> Target
 ```
 
-## 数据源决策（**需要用户拍板**）
+关键点：**promote 必须人工触发**，finder 只负责排序与召回，不自动写库——避免把噪声样本污染进基线。
 
-**A）只看 `eval_results`（推荐 MVP）**：所有策略都基于"已经被 judge 跑过的 case"，依赖 Phase 5/6 写好的 `judge_confidence` / `latency_ms` / `cost_usd` 列 + `axis_breakdown["safety"]`（Phase 10 起）。优点：单一表、SQL 简单、跟 ROADMAP 里"必须先有 Phase 5/6 confidence 数据"一致；缺点：raw trace 里 latency/cost outlier 没被覆盖。
+## 三条策略的排序逻辑
 
-**B）`eval_results` + 原始 `spans` 双源**：再加一种 `trace_outlier` 策略，扫 `spans.attributes` 找 latency/cost > p95 的未评测 trace，走 `case_extract.py` 提取 → 入候选池。优点：发现 production 里"完全没进 eval_set 的异常"；缺点：多一条路径、`uncertainty` 不适用（trace 还没跑 judge）、跟现有 `eval-set add --from-trace` 功能重叠。
+`BadCase` 是 finder 的统一返回结构（[src/evalgate/badcase/finder.py](../src/evalgate/badcase/finder.py)），核心字段：`eval_result_id`、`score`、`judge_confidence`、`latency_ms`、`cost_usd`、`strategy`、`reason`（人类可读的一句话），以及 llm 策略才填的 `llm_label`。
 
-> **我的建议：A**。Phase 7 是闭环 evals → 主动学习的第一步，先把 eval_results 里的信号榨干；trace-source outlier 留给后续小迭代（或独立 phase），避免一开始就把两条路径都做半成品。
-
-## Schema（不加新表）
-
-Phase 5/6 的 `eval_results` 已经齐了所需信号列（score / judge_confidence / latency_ms / cost_usd / `axis_breakdown`），Phase 7 **不发 migration**，全部查询 on-the-fly。
-
-> **注（schema 更新）**：早期 Phase 7 设计依赖一个独立的 `safety_violation` 布尔列。Phase 10 之后 safety 信号统一收进 `axis_breakdown["safety"]`（4 个速率子项），`safety_violation` 列已由 migration 0011 删除。下文 outlier 策略与 `BadCase` 字段以当前实现为准。
-
-LLM 策略每次重跑也行（cheap model，调一次 ~$0），如果以后嫌慢，Phase 16 calibration 顺手加 `bad_case_labels` 缓存表。**Phase 7 MVP 不引入缓存表**——决策清晰度优先。
-
-## 核心 API：BadCaseFinder
-
-[src/evalgate/badcase/finder.py](../src/evalgate/badcase/finder.py)：
-
-```python
-@dataclass
-class BadCase:
-    eval_result_id: str
-    eval_case_id: str | None
-    eval_run_id: str
-    score: float
-    judge_confidence: float | None
-    latency_ms: int
-    cost_usd: float
-    tags: list[str]
-    strategy: str            # "uncertainty" | "outlier" | "llm"
-    reason: str              # human-readable 一句话
-    llm_label: dict | None = None  # 仅 llm 策略填
-
-async def find_uncertainty(session, *, run_id: str | None, limit: int) -> list[BadCase]: ...
-async def find_outlier(    session, *, run_id: str | None, limit: int) -> list[BadCase]: ...
-async def find_llm(        session, *, run_id: str | None, limit: int,
-                            cheap_model: str = "ollama/qwen2.5:7b",
-                            mock: bool = False) -> list[BadCase]: ...
-async def find(            session, *, strategy: str, ...) -> list[BadCase]:
-    """Dispatch by strategy."""
-```
-
-排序规则：
-
-| Strategy | SQL / 逻辑 | 直觉 |
+| Strategy | 排序 / 逻辑 | 直觉 |
 |---|---|---|
-| `uncertainty` | `ORDER BY judge_confidence ASC NULLS LAST` | judge 越不确定越有研究价值 |
-| `outlier` | `score=0` OR `axis_breakdown["safety"]` 任一速率 > 0 OR `latency_ms > p95` OR `cost_usd > p95` | 已知坏 + 长尾 |
-| `llm` | 先取 top-2*limit by uncertainty → 让 cheap model 给"subtle bad" 评 0/1 → 留 1 的取 limit | active learning |
+| `uncertainty` | `ORDER BY judge_confidence ASC NULLS LAST` | judge 越没把握，越有研究价值（典型 uncertainty sampling） |
+| `outlier` | `score=0` OR `axis_breakdown["safety"]` 任一速率 > 0 OR `latency_ms > p95` OR `cost_usd > p95` | 已知坏 + 资源长尾 |
+| `llm` | 先取 uncertainty top-`2*limit` → cheap model 给「subtle bad」评 0/1 → 留 1 的取 `limit` | 用便宜算力放大召回 |
 
-> **p95**：在 run 内算（query 带 `run_id`）或全局（不带 run_id）。用 `numpy.percentile`（已是 dep）。
+p95 既可在 run 内算（带 `run_id`），也可全局算（不带），用 `numpy.percentile`。数据稀疏时（少于 4 条）跳过 p95，避免无意义的分位数。
 
-## REST
-
-[src/evalgate/api/routers/badcase.py](../src/evalgate/api/routers/badcase.py)：
-
-- `GET /v1/badcases?strategy=uncertainty&limit=20&run_id=<uuid>` → `list[BadCase]`
-- `POST /v1/badcases/{eval_result_id}/promote` body `{target_set_id, extra_tags}` → 新建 `EvalCaseRow` in target set，返回 `EvalCaseOut`
-
-挂在 [src/evalgate/api/main.py](../src/evalgate/api/main.py) `app.include_router(badcase.router, prefix="/v1", tags=["badcase"])`.
-
-## CLI
-
-[src/evalgate/cli.py](../src/evalgate/cli.py) 加 `badcase` 子命令组：
-
-```
-evalgate badcase list   --strategy {uncertainty|outlier|llm} [--limit 20]
-                        [--run <run_id>] [--mock]
-evalgate badcase promote --result <eval_result_id>
-                         --eval-set <target_set_id_or_name>
-                         [--tag interesting --tag from-phase7]
-```
-
-`list` 输出 JSON 数组（含 `eval_result_id`，下一步 promote 用）。`promote` 复制 `eval_case` 的 `input/expected/task_type` 到 target set，自动追加 `tags=["from-badcase","strategy:<s>"] + 用户额外 tags`，并保留 `source_trace_id`/`source_span_id` 让 lineage 追得回去。
+llm 策略复用 [src/evalgate/judge/protocol.py](../src/evalgate/judge/protocol.py) 的 `acompletion_json`，提示词要求模型严格返回 `{"subtle_bad": true|false, "reason": "..."}`，并支持 `mock` 模式让 CI 离线可跑。
 
 ## Promote 语义（关键设计）
 
-[src/evalgate/badcase/repository.py](../src/evalgate/badcase/repository.py)：`promote_result_to_set(session, *, result_id, target_set_id, extra_tags) -> EvalCaseRow`。
+[src/evalgate/badcase/repository.py](../src/evalgate/badcase/repository.py) 的 `promote_result_to_set(session, *, result_id, target_set_id, extra_tags)`：
 
-- 输入：`eval_result_id`（badcase finder 返回的那个）
-- 解析：load `EvalResultRow` → 它的 `eval_case_id` → load `EvalCaseRow`
-- 写入：在 `target_set_id` 里**新建**一条 `EvalCaseRow`，input/expected/task_type 全部复制，tags 合并（去重），`source_trace_id`/`source_span_id` 透传
-- 不允许 promote 到原 set（同 set 的 dedup 防呆，HTTP 409 / CLI 报错）
+- 输入是 finder 返回的 `eval_result_id`，解析出它背后的 `EvalCaseRow`。
+- 在 `target_set_id` 里登记这条 case，并保留 `source_trace_id` / `source_span_id`，让 lineage（血缘，可追溯到原始 trace）追得回去。
+- 自动追加 `tags = ["from-badcase", "strategy:<s>"] + 用户额外 tags`。
+- 同一 (case, set) 二次 promote 结构上即被拒绝（HTTP 409 / CLI 报错）。
 
-> **不做 hard reference**：新 case 跟原 case 之间**不建外键**，只通过 tags 弱耦合（`tags` 加 `"badcase:from:<original_case_id>"`）。理由跟 Phase 4 `source_trace_id` 一致——eval_case 必须能独立删除/归档。
+接口形态：
 
-## LLM 策略细节
+- REST（[src/evalgate/api/routers/badcase.py](../src/evalgate/api/routers/badcase.py)）：`GET /v1/badcases?strategy=&limit=&run_id=` 与 `POST /v1/badcases/{eval_result_id}/promote`。
+- CLI（[src/evalgate/cli.py](../src/evalgate/cli.py)）：`evalgate badcase list --strategy ...` 与 `evalgate badcase promote --result ... --eval-set ...`。
 
-cheap model 提示：
+## 数据模型抉择：从「复制 case」到 many-to-many membership
 
-```text
-Given an LLM input and its candidate output, decide whether the output is
-SUBTLY WRONG (correct-looking but inaccurate / unhelpful / off-spec).
-Return STRICT JSON: {"subtle_bad": true|false, "reason": "<one sentence>"}.
+这是 Phase 7 最值得讲的演进，分两步落地。
 
-INPUT:
-{case_input}
+**第一版（朴素做法）**：promote = 复制一份 `EvalCaseRow`（新 `id`、相同 payload）。受早期 `eval_cases.eval_set_id` 的 N:1（一个 case 只属于一个 set）约束。三个问题：
 
-OUTPUT:
-{candidate_output}
+1. 同一 case 进多个 set 要复制 N 份 `input/expected`，编辑和版本管理割裂。
+2. lineage 只能靠 tags 字符串软追溯，没法 SQL JOIN。
+3. 「同 case 二次 promote」只能在应用层查重，结构上没有保护。
+
+**终版（many-to-many membership，多对多归属表）**：
+
+```mermaid
+erDiagram
+  eval_sets ||--o{ eval_case_set_memberships : contains
+  eval_cases ||--o{ eval_case_set_memberships : "belongs to (N:M)"
+  eval_case_set_memberships {
+    uuid eval_case_id
+    uuid eval_set_id
+    uuid promoted_from_result_id
+    string strategy
+    json tags
+    timestamp created_at
+  }
 ```
 
-实现复用 [src/evalgate/judge/protocol.py](../src/evalgate/judge/protocol.py) 的 `acompletion_json`。`mock_response` 用 `'{"subtle_bad": true, "reason": "mock"}'` 让 CI 走得通。
+- 新表 `eval_case_set_memberships` + `UniqueConstraint(case, set)`，case 与 set 解耦成多对多。
+- `promote_result_to_set` 不再复制 case，只 insert 一条 membership——**结构性 dedup**：重复 promote 直接撞唯一约束（`AlreadyPromotedError` → 409），不再靠应用层查重。
+- `list_cases(set_id)` 改为按 membership JOIN 取 case，Phase 5 的 runner 无需感知这层变化。
+- promote 响应从 `EvalCaseOut` 换成 `PromotionOut`，暴露 membership 元数据（`promoted_from_result_id` / `strategy` / `tags` / `created_at`），lineage 现在能 JOIN 查询。
+- 最终把过渡期保留的 `EvalCaseRow.eval_set_id` 列删除，membership 表成为 case→set 归属的**唯一真理源**；为此 migration 先 backfill 旧数据再 drop 列（反过来会触发 PG 外键违反），并写了可逆的 `downgrade`（取每个 case 最早一条 membership 还原 primary set）。
 
-## 测试
+## 技术选型与抉择
 
-- [tests/test_badcase_finder.py](../tests/test_badcase_finder.py)：seed 一个 run + 多条 eval_results（手动设置 confidence/latency/cost），断言三种策略排序
-- [tests/test_badcase_promote.py](../tests/test_badcase_promote.py)：promote 后 target set 多一条 case，input/expected/tags 正确合并；同 set 拒绝
-- [tests/test_badcase_routers.py](../tests/test_badcase_routers.py)：REST 端到端
-- [tests/test_badcase_cli.py](../tests/test_badcase_cli.py)：CLI list + promote 闭环
+**1. 数据源：只看 `eval_results` vs 双源（再加原始 spans）**
 
-## Smoke 脚本
+最初权衡过两种数据源：
 
-[scripts/phase7_badcase_smoke.py](../scripts/phase7_badcase_smoke.py)：
+- **A·只看 `eval_results`**：三条策略都基于「已被 judge 跑过的 case」。优点是单表、SQL 简单、与「先有 confidence 数据」的前置一致；缺点是 raw trace 里那些从没进过 eval_set 的 latency/cost 异常覆盖不到。
+- **B·`eval_results` + 原始 `spans` 双源**：额外扫 `spans.attributes` 找未评测的长尾 trace。优点是能发现 production 里完全没被评测的异常；缺点是多一条路径、`uncertainty` 对未跑 judge 的 trace 不适用、且与已有的 `eval-set add --from-trace` 功能重叠。
 
-1. 临时 SQLite，seed 10 条 billing case
-2. 跑 `evalgate run --mock`（让 judge_confidence 由 SC mock 数据带出来）
-3. 调 `BadCaseFinder.find(strategy="uncertainty")` 拿 top-3
-4. 调 `promote_result_to_set` 复制到新 eval_set "billing-hard"
-5. 打印结果
+**选 A**。Phase 7 是「评测闭环 → 主动学习」的第一步，先把 `eval_results` 里的信号榨干；trace-source outlier 留给后续迭代，避免一上来就把两条路径都做成半成品。
 
-走 `EVALGATE_MOCK_LLM=1` 完全离线可重现。
+**2. 不引入 LLM 标签缓存表**
 
-## 退出标准
+llm 策略每次重跑都重新调一次 cheap model（成本约等于 0）。本可以加 `bad_case_labels` 缓存表，但 MVP 阶段「决策路径清晰」优先于「省那点调用」，缓存留给后续校准阶段顺手补。
 
-- 全测试绿（旧 99 + 新 ~12 ≈ 111）
-- `ruff check` clean
-- `scripts/phase7_badcase_smoke.py`：mock 模式跑通，10 条 → 3 badcase → promote 后 target set count + 3
-- ROADMAP Phase 7 → `[DONE]`
-- 数字 + commit hash 写 JOURNAL
+**3. 不建 hard reference（硬外键）**
 
-## 风险点 / 范围控制
+promote 出来的 case 与原 case **不建外键**，只用 tags 弱耦合记录来源。理由与 `source_trace_id` 一致——eval_case 必须能独立删除/归档，硬外键会让清理链路互相绑死。
 
-- **不做**：trace-only outlier（B 方案）、LLM 标签持久化、自动 promote（必须用户手动 `promote` 才入 set）、UI / 可视化
-- **依赖**：`numpy.percentile`（已是 dep）；`litellm.acompletion`（Phase 5 引入）
-- **数据稀疏时**：少于 limit 条记录就全返；少于 4 条记录跳 p95（直接全部当 outlier 也行；返回 0 行）
+**4. 选 Postgres + JSONB 承载 membership（ADR-002）**
 
-## Forward-compat
+membership 的 `tags` 是 schema-less 列表、`strategy` 等元数据也可能演进，用 JSONB 列存最灵活；同时 case→set 的归属查询本质是 JOIN + 聚合，是 SQL 的强项。这正是 ADR-002「不固定 schema 的字段用 JSONB，其余吃 SQL 关系能力」在本阶段的具体落点。删列时数据迁移写在 Python 里跨 SQLite/PG 方言，CI 用 ephemeral SQLite、生产用 PG 走同一套 repository 代码。
 
-- Phase 17（κ 实验）：直接消费 promote 出来的 hard cases，跟人标对照
-- Phase 14（Adversarial Case Synth）：BadCaseFinder.find_llm() 的 prompt 可以替换成"生成更难的变体"，重用同一管线
-- Phase 16（Calibration）：补 `bad_case_labels` 缓存表，避免重复 LLM 调用
+## 与后续阶段的衔接
 
----
+- **校准阶段**：直接消费 promote 出来的 hard case 与人标对照，验证 judge 的可信度。
+- **对抗样本合成**：`find_llm` 的提示词可替换成「生成更难的变体」，复用同一条召回管线。
 
-## Phase 7.5 后置 refactor · promote 改 many-to-many membership
+## 测试策略
 
-**动机**：原 Phase 7 promote = 复制 `EvalCaseRow`（不同 `id`、相同 payload）。受 Phase 4 `eval_cases.eval_set_id` N:1 约束。问题：
-
-1. 同一 case 进多个 set 要复制 N 份 input/expected → 编辑/版本管理麻烦
-2. lineage 只靠 tags 字符串（`badcase:source-case:<id>`）软追溯，没法 SQL JOIN
-3. 防止「同 case 二次 promote」需要 application-level 查重，结构上没保护
-
-**新设计**：
-
-- 新表 `eval_case_set_memberships(id, eval_case_id, eval_set_id, promoted_from_result_id, strategy, tags, created_at)` + `UniqueConstraint(case, set)`
-- `EvalCaseRow.eval_set_id` 保留为「原始/主集」语义，Phase 4 一切代码不动
-- `list_cases(set_id)` 改为「主集行 ∪ membership 行」去重，Phase 5 runner 无需感知
-- `promote_result_to_set(...)` 不再复制 case，只 insert 一条 membership，结构性 dedup
-- API 响应模型从 `EvalCaseOut` 换成新 `PromotionOut`（暴露 membership 元数据：`promoted_from_result_id`、`strategy`、`tags`、`created_at`）
-- 新增 `AlreadyPromotedError` → HTTP 409
-
-**新表**：[src/evalgate/db/migrations/versions/0006_create_eval_case_memberships.py](../src/evalgate/db/migrations/versions/0006_create_eval_case_memberships.py)
-
-**API breaking change（仅 Phase 7 路径，未影响 Phase 1–6）**：
-
-| 接口 | 7 → 7.5 |
-|---|---|
-| `POST /v1/badcases/{id}/promote` 响应 | `EvalCaseOut` → `PromotionOut` |
-| `evalgate badcase promote` 输出 | case 字段集 → membership 字段集 |
-| 失败码 | 加 `already_promoted` (409 / CLI rc=1) |
-
-**向后兼容验证**：旧 Phase 1–6 测试零修改全绿；`evalgate run` 在 promote 后的 target set 上能正常迭代到所有 case（含 membership）。
-
-**测试**：原 19 个 Phase 7 测试中 7 个改写（适应 membership 字段名），新增 5 个（`already_promoted` × 3 层 + `list_cases` 看到 promoted case + GET detail 端点同样可见）= 全套 24 个 badcase 相关测试，**总 123 全绿**。
-
----
-
-## 附录：Phase 4.5 收尾 · 删 `EvalCaseRow.eval_set_id`
-
-Status: **DONE**
-
-Phase 7.5 保留 `EvalCaseRow.eval_set_id` 是「为了向后兼容 Phase 4 / 5 / 6 一行不改」的妥协。这一阶段把它移除：membership 表成为**唯一**的 case→set 归属真理源。
-
-### Δ
-
-- 移除 ORM 字段 `EvalCaseRow.eval_set_id`
-- 新 migration [0007](../src/evalgate/db/migrations/versions/0007_drop_eval_case_eval_set_id.py)：
-  1. backfill 每行 `EvalCaseRow.eval_set_id` 进 `eval_case_set_memberships`（dedup 已存在 (case, set)）
-  2. `batch_alter_table` 删 `ix_eval_cases_eval_set_id` + 列本身
-  3. `downgrade()` 可逆：加回列 → 用 oldest membership 的 set 回填 → enforce NOT NULL + FK + index
-- `eval_set/repository.add_case[_from_trace]`：同事务内补一条「originating membership」（`promoted_from_result_id=NULL, strategy=NULL, tags=[]`）
-- `list_cases(set_id)`：单 JOIN，删 7.5 的 union + dedup
-- `badcase/repository.promote_result_to_set`：移除 `SameSetPromotionError`；"promote 进原 set" 结构上就是「写第二次同 (case, set)」，落到 `AlreadyPromotedError` (409)
-- API 契约：`EvalCaseOut` 删 `eval_set_id` 字段；container 是 set / payload 是 case，二者通过 `GET /v1/eval-sets/{id}` 的嵌套或 `PromotionOut` 关联
-
-### 关键设计抉择
-
-1. **Migration 先 backfill 再 drop**：反过来 PG 会 FK violation；data migration 写在 Python 里跨方言。
-2. **真写 downgrade**：取 case 最早一条 membership.created_at 还原 primary，复原 Phase 4 的原意。
-3. **不保留 `SameSetPromotionError`**：仅是 `AlreadyPromotedError` 的别名，Phase 4.5 后两者结构同源；少一类错误码 = semantic 更清。
-4. **Tests 改走生产路径**：原直接 seed `EvalCaseRow(eval_set_id=...)` 的 3 个 fixture 全部改 `set_repo.add_case`，顺带覆盖 add_case 的「originating membership」插入。
-5. **零运行时性能回退**：原 union + dedup → 单 JOIN，查询计划反而更简洁。
+围绕「三策略排序正确 + promote 语义（合并 tags、拒绝重复、list 能看到 promoted case）」做端到端覆盖，从 repository 层一路测到 REST / CLI，全程走 mock LLM 与临时 SQLite 保证离线可重现。
