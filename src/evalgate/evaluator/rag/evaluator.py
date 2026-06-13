@@ -197,6 +197,22 @@ class _RagasScorer:
         reference_answer: str | None,
         reference_contexts: list[str],
     ) -> tuple[dict[str, float], list[JudgeCallRecord]]:
+        if self._mock:
+            sub_metrics = {name: 0.8 for name in self._spec.metrics}
+            raw_calls = [
+                JudgeCallRecord(
+                    judge_model=f"ragas:{name}",
+                    sub_run_index=idx,
+                    position=None,
+                    score=value,
+                    winner=None,
+                    reason="mock-ragas-score",
+                    raw={"metric": name, "value": value, "mock": True},
+                )
+                for idx, (name, value) in enumerate(sub_metrics.items())
+            ]
+            return sub_metrics, raw_calls
+
         self._initialise()
 
         from datasets import Dataset

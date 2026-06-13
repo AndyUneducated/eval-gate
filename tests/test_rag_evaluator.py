@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from evalgate.db.models import EvalCaseRow
-from evalgate.evaluator.rag.evaluator import RagEvaluator
+from evalgate.evaluator.rag.evaluator import RagEvaluator, _RagasScorer
 from evalgate.judge.prompt_spec import (
     CandidateSpec,
     JudgePolicySpec,
@@ -144,6 +144,31 @@ async def test_rag_evaluator_happy_path(monkeypatch, corpus_path: Path):
         "ragas:context_precision",
         "ragas:answer_relevance",
     }
+
+
+@pytest.mark.asyncio
+async def test_ragas_scorer_mock_mode_skips_ragas(monkeypatch, corpus_path: Path):
+    def explode() -> None:
+        raise AssertionError("mock scorer should not initialise ragas")
+
+    scorer = _RagasScorer(_spec(corpus_path), mock=True)
+    monkeypatch.setattr(scorer, "_initialise", explode)
+
+    sub_metrics, calls = await scorer.score(
+        question="when are invoices due?",
+        answer="mock-rag-answer",
+        contexts=["Invoices are due 14 days later."],
+        reference_answer="14 days",
+        reference_contexts=["Invoices are due 14 days later."],
+    )
+
+    assert sub_metrics == {
+        "faithfulness": 0.8,
+        "context_precision": 0.8,
+        "answer_relevance": 0.8,
+    }
+    assert len(calls) == 3
+    assert all(call.raw and call.raw["mock"] is True for call in calls)
 
 
 @pytest.mark.asyncio
