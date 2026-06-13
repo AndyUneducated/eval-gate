@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.db.models import EvalResultRow
 from evalgate.judge.protocol import acompletion_json
+from evalgate.report.calibration import Calibrator
 
 MIN_FOR_PERCENTILE = 4  # below this n, p95 has no statistical meaning
 
@@ -122,14 +123,32 @@ def _to_badcase(
 
 
 async def find_uncertainty(
-    session: AsyncSession, *, run_id: str | None = None, limit: int = 20
+    session: AsyncSession,
+    *,
+    run_id: str | None = None,
+    limit: int = 20,
+    calibrator: Calibrator | None = None,
 ) -> list[BadCase]:
     rows = await _load_rows(session, run_id=run_id)
+    if calibrator is not None:
+        # Phase 16: rank by *calibrated* uncertainty — closeness of the
+        # calibrated P(good) to 0.5 (the decision boundary). This is the
+        # principled active-learning signal once the score is a real
+        # probability, and it works at read time off the immutable raw score.
+        rows.sort(key=lambda r: -calibrator.uncertainty(float(r.score)))
+        out: list[BadCase] = []
+        for r in rows[:limit]:
+            p = calibrator.transform(float(r.score))
+            u = 1.0 - abs(2.0 * p - 1.0)
+            reason = f"calibrated_uncertainty={u:.3f} (p_good={p:.3f})"
+            out.append(_to_badcase(r, strategy="uncertainty", reason=reason))
+        return out
+
     # NULL judge_confidence is the *most* unknown — sort to the end, not the
     # start: a missing-confidence row is "couldn't even get a signal" and
     # rarely useful for promotion. Users wanting them can re-run Phase 6.
     rows.sort(key=lambda r: (r.judge_confidence is None, r.judge_confidence or 0.0))
-    out: list[BadCase] = []
+    out = []
     for r in rows[:limit]:
         if r.judge_confidence is None:
             reason = "no confidence signal"
@@ -292,10 +311,11 @@ async def find(
     limit: int = 20,
     mock: bool = False,
     cheap_model: str = "ollama/qwen3.5:9b",
+    calibrator: Calibrator | None = None,
 ) -> list[BadCase]:
     """Dispatch by strategy name. Raises ``ValueError`` on unknown strategy."""
     if strategy == "uncertainty":
-        return await find_uncertainty(session, run_id=run_id, limit=limit)
+        return await find_uncertainty(session, run_id=run_id, limit=limit, calibrator=calibrator)
     if strategy == "outlier":
         return await find_outlier(session, run_id=run_id, limit=limit)
     if strategy == "llm":

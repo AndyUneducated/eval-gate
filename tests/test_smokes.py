@@ -34,6 +34,9 @@ _SMOKES: dict[str, dict[str, str]] = {
     "phase10_safety_smoke.py": {},
     "phase12_ci_gate.py": {},
     "phase13_shadow_smoke.py": {},
+    "phase14_adversarial_smoke.py": {},
+    "phase15_sequential_smoke.py": {},
+    "phase16_calibration_smoke.py": {},
 }
 
 
