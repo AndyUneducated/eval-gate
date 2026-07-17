@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from evalgate.judge.protocol import loads_tolerant_json
 from evalgate.judge.prompt_spec import JailbreakDetectorSpec
+from evalgate.judge.protocol import loads_tolerant_json
 from evalgate.safety.detector import JailbreakInputResult
 from evalgate.safety.jailbreak import (
     DEFAULT_JAILBREAK_KEYWORDS,
