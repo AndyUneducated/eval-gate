@@ -47,12 +47,13 @@ class AgentTrajectoryEvaluator:
 
         match_flags: list[bool] = []
         mismatch_reasons: list[str] = []
+        mismatch_by_idx: dict[int, str] = {}
         for idx, exp in enumerate(expected):
             if idx >= len(actual):
                 match_flags.append(False)
-                mismatch_reasons.append(
-                    f"step[{idx}] missing actual tool call; expected tool={exp['tool']!r}"
-                )
+                reason = f"step[{idx}] missing actual tool call; expected tool={exp['tool']!r}"
+                mismatch_reasons.append(reason)
+                mismatch_by_idx[idx] = reason
                 continue
             act = actual[idx]
             name_ok = exp["tool"] == act["tool"]
@@ -60,12 +61,23 @@ class AgentTrajectoryEvaluator:
             ok = name_ok and args_ok
             match_flags.append(ok)
             if not ok:
-                mismatch_reasons.append(
+                reason = (
                     f"step[{idx}] mismatch: expected {exp!r}, actual tool={act['tool']!r} "
                     f"args={act.get('args', {})!r}"
                 )
+                mismatch_reasons.append(reason)
+                mismatch_by_idx[idx] = reason
 
-        n = max(1, len(expected))
+        # Surplus (unexpected) actual steps beyond the expected trajectory are
+        # spurious tool calls; record them so accuracy is penalised below.
+        for idx in range(len(expected), len(actual)):
+            reason = f"step[{idx}] unexpected extra tool call: {actual[idx]['tool']!r}"
+            mismatch_reasons.append(reason)
+            mismatch_by_idx[idx] = reason
+
+        # Denominator spans both trajectories so extra/spurious calls (actual >
+        # expected) reduce accuracy rather than being ignored.
+        n = max(1, len(expected), len(actual))
         tool_call_accuracy = sum(1 for m in match_flags if m) / n
         matched_prefix = 0
         for flag in match_flags:
@@ -86,7 +98,7 @@ class AgentTrajectoryEvaluator:
                     position=None,
                     score=score_i,
                     winner=None,
-                    reason=None if score_i else mismatch_reasons[0] if mismatch_reasons else None,
+                    reason=None if score_i else mismatch_by_idx.get(idx),
                     raw={
                         "tool": step["tool"],
                         "args": step.get("args", {}),
@@ -106,8 +118,8 @@ class AgentTrajectoryEvaluator:
         return EvaluationOutcome(
             score=score,
             output_text=run.final_answer,
-            cost_usd=0.0,
-            latency_ms=0,
+            cost_usd=run.cost_usd,
+            latency_ms=run.latency_ms,
             confidence=step_wise_success,
             axis_breakdown={
                 "quality": {
@@ -127,7 +139,7 @@ def _normalise_expected(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     out: list[dict[str, Any]] = []
-    for idx, raw in enumerate(value):
+    for raw in value:
         if not isinstance(raw, dict):
             continue
         tool = raw.get("tool")
@@ -136,7 +148,7 @@ def _normalise_expected(value: Any) -> list[dict[str, Any]]:
             continue
         if not isinstance(args, dict):
             continue
-        out.append({"tool": tool.strip(), "args": args, "_idx": idx})
+        out.append({"tool": tool.strip(), "args": args})
     return out
 
 

@@ -13,22 +13,19 @@ Currently exposes:
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.api.deps import SessionDep
 from evalgate.core.logging import get_logger
-from evalgate.db.session import get_session
 from evalgate.dev.trace_seeder import TraceSpec, build_otlp_envelope
 from evalgate.ingest.otlp import parse_otlp_json
 from evalgate.ingest.persistence import persist_spans
 
 log = get_logger("evalgate.api.dev")
 router = APIRouter()
-
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 class SeedTraceResponse(BaseModel):

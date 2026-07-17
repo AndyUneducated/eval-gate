@@ -187,7 +187,11 @@ def compute_fail_boundaries(
     z_fail: list[float] = []
     f: np.ndarray | None = None
     for k, tk in enumerate(t):
-        f = _norm_pdf_grid(b, math.sqrt(tk)) if k == 0 else _propagate(f, grid_step, tk - t[k - 1])
+        if k == 0:
+            f = _norm_pdf_grid(b, math.sqrt(tk))
+        else:
+            assert f is not None  # set on the k==0 iteration; narrows Optional
+            f = _propagate(f, grid_step, tk - t[k - 1])
         pi_k = incr[k]
         if pi_k <= 0.0:
             # Nothing to spend this look -> boundary at -inf (never fires).

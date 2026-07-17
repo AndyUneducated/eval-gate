@@ -312,7 +312,10 @@ make ci-gate-real   # 真模型，需要本机 Ollama 装好 qwen3.5:9b + qwen3-
 | `make install` | 把所有依赖（含 dev 工具）装到 `.venv/` |
 | `make dev` / `make db-up` / `make db-down` | 管理本地 Postgres |
 | `make test` | 跑 pytest |
-| `make lint` / `make format` | Ruff check + format 检查 / 自动修复 |
+| `make coverage` | pytest + 覆盖率报告 |
+| `make lint` / `make format` | Ruff check + format + mypy 检查 / 自动修复 |
+| `make typecheck` | 静态类型检查（mypy） |
+| `make audit` | 依赖漏洞扫描（pip-audit） |
 | `make ui` | 在 `http://127.0.0.1:8501` 启动 Streamlit 运维 UI（通过 HTTP 调 `evalgate-api`） |
 | `make ci-gate` / `make ci-gate-real` | CI 卡口端到端（mock / 真模型） |
 | `make shadow-smoke` | Shadow Mode 端到端 smoke（离线） |
@@ -358,6 +361,32 @@ curl "$(terraform -chdir=deploy/terraform output -raw alb_url)/healthz"
 ```
 
 栈的模块划分、成本取舍（刻意省 NAT gateway）、生产硬化清单（私网 + NAT、HTTPS/ACM、远端 state、Multi-AZ）见 [`deploy/terraform/README.md`](deploy/terraform/README.md)、[`docs/PHASE_18_PLAN.md`](docs/PHASE_18_PLAN.md) 与 ADR-017。
+
+### 安装 extras（精简核心）
+
+核心安装（API + gate + 摄取 + judge）保持精简；RAG / PII 安全 / Streamlit UI / 画图这些重依赖是可选 extras，按需装：
+
+```bash
+pip install "evalgate[rag]"                 # ragas + langchain 适配（RAG evaluator）
+pip install "evalgate[safety]"              # presidio（PII 检测）
+pip install "evalgate[ui]"                  # Streamlit 运维 UI
+pip install "evalgate[rag,safety,ui,viz]"   # 或者直接 evalgate[all]
+```
+
+本地开发用 `uv sync` 会一次装齐（dev 组已包含全部 extras）。
+
+### 运行时配置（环境变量）
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `DATABASE_URL` | 本地 PG | SQLAlchemy async 连接串 |
+| `EVALGATE_ENV` | `local` | 非 `local`/`dev`/`test` 时不挂载 `/v1/dev/*` 开发路由 |
+| `EVALGATE_API_KEY` | 空 | 设置后所有 `/v1/*` 需要 `Authorization: Bearer <key>` 或 `X-API-Key`（不设=本地开放） |
+| `EVALGATE_CORS_ALLOW_ORIGINS` | 空 | 逗号分隔的 CORS 白名单 |
+| `EVALGATE_MAX_REQUEST_BYTES` | 25 MiB | 请求体大小上限（摄取内存 DoS 防护） |
+| `EVALGATE_MOCK_LLM` | 空 | 置 1 走全离线确定性 mock（CI） |
+
+探活/就绪：`/healthz` 只判活（不碰 DB），负载均衡应对 `/readyz`（查 DB 连通性，不可用返回 503）。部署到共享环境时务必设 `EVALGATE_API_KEY` 并前置 TLS，详见 [SECURITY.md](./SECURITY.md)。
 
 ## 贡献
 

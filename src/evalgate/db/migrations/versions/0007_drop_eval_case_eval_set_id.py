@@ -102,6 +102,11 @@ def downgrade() -> None:
         )
     )
 
+    # Cases with zero memberships can't be represented by the legacy N:1 schema
+    # (which required a set). Drop them so the NOT NULL enforcement below can't
+    # abort the downgrade mid-way on a leftover NULL.
+    bind.execute(sa.text("DELETE FROM eval_cases WHERE eval_set_id IS NULL"))
+
     with op.batch_alter_table("eval_cases") as batch:
         batch.alter_column("eval_set_id", nullable=False)
         batch.create_foreign_key(

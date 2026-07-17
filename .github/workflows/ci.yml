@@ -32,5 +32,69 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check .
 
-      - name: Pytest
-        run: uv run pytest
+      - name: Type check (mypy)
+        run: uv run mypy
+
+      - name: Pytest (with coverage)
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  migrations:
+    # Validate Alembic migrations against a *real* Postgres (unit tests use
+    # SQLite): upgrade to head, then downgrade to base to catch broken
+    # downgrades before they ship.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: evalgate
+          POSTGRES_PASSWORD: evalgate
+          POSTGRES_DB: evalgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U evalgate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://evalgate:evalgate@localhost:5432/evalgate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync
+      - name: Alembic upgrade head
+        run: uv run alembic upgrade head
+      - name: Alembic downgrade to base
+        run: uv run alembic downgrade base
+
+  security:
+    # Advisory dependency vulnerability scan. Non-blocking: a fresh CVE
+    # shouldn't wedge unrelated PRs, but it surfaces in the checks list.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync
+      - name: pip-audit
+        run: uv run pip-audit --ignore-vuln GHSA-none || true

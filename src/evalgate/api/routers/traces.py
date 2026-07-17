@@ -13,20 +13,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.api.deps import SessionDep
 from evalgate.core.logging import get_logger
 from evalgate.core.schemas import Span
-from evalgate.db.session import get_session
 from evalgate.ingest import persistence
 from evalgate.ingest.otel_mapper import map_otel_span
 
 log = get_logger("evalgate.api.traces")
 router = APIRouter()
-
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 class TraceIngestRequest(BaseModel):

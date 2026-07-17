@@ -108,9 +108,19 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _cmd_gate(args: argparse.Namespace) -> int:
-    baseline = _load_records(args.baseline)
-    candidate = _load_records(args.candidate)
-    report = build_gate_report(baseline, candidate)
+    # Distinguish infra failures (missing / malformed inputs -> exit 2) from a
+    # genuine regression verdict (exit 1). Otherwise CI can't tell "the gate
+    # failed" apart from "the gate couldn't run".
+    try:
+        baseline = _load_records(args.baseline)
+        candidate = _load_records(args.candidate)
+        report = build_gate_report(baseline, candidate)
+    except FileNotFoundError as exc:
+        _print({"error": "input_not_found", "detail": str(exc)})
+        return 2
+    except (json.JSONDecodeError, ValueError) as exc:
+        _print({"error": "input_invalid", "detail": str(exc)})
+        return 2
     payload = report.model_dump_json(indent=2)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +188,20 @@ def run_db_command(body: Callable[[AsyncSession], Awaitable[dict[str, Any]]]) ->
         return exc.exit_code
     _print(payload)
     return 0
+
+
+def _run_or_error(body: Callable[[AsyncSession], Awaitable[Any]]) -> tuple[int | None, Any]:
+    """Run a DB body, mapping any :class:`EvalGateError` to ``(exit_code, None)``.
+
+    For verdict-style commands that need a custom exit code on success (e.g. the
+    gate/shadow pass/fail convention) rather than the fixed ``0`` of
+    :func:`run_db_command`.
+    """
+    try:
+        return None, asyncio.run(_with_session(body))
+    except EvalGateError as exc:
+        _print(exc.payload())
+        return exc.exit_code, None
 
 
 def _cmd_eval_set_create(args: argparse.Namespace) -> int:
@@ -447,7 +471,7 @@ def _add_run_subcommand(parent: argparse._SubParsersAction) -> None:
     run.set_defaults(func=_cmd_run)
 
 
-_VALID_BADCASE_STRATEGIES = ("uncertainty", "outlier", "llm")
+_VALID_BADCASE_STRATEGIES = badcase_finder.VALID_STRATEGIES
 
 
 def _cmd_badcase_list(args: argparse.Namespace) -> int:
@@ -469,7 +493,10 @@ def _cmd_badcase_list(args: argparse.Namespace) -> int:
         )
         return {"strategy": args.strategy, "items": [bc.to_dict() for bc in items]}
 
-    _print(asyncio.run(_with_session(run)))
+    rc, result = _run_or_error(run)
+    if rc is not None:
+        return rc
+    _print(result)
     return 0
 
 
@@ -579,7 +606,9 @@ def _cmd_shadow_rollup(args: argparse.Namespace) -> int:
             "summary": summary,
         }
 
-    result = asyncio.run(_with_session(run))
+    rc, result = _run_or_error(run)
+    if rc is not None:
+        return rc
     _print(result)
     return 0 if result.get("passed") else 1
 
@@ -600,7 +629,9 @@ def _cmd_shadow_report(args: argparse.Namespace) -> int:
             "report": report.model_dump(mode="json"),
         }
 
-    result = asyncio.run(_with_session(run))
+    rc, result = _run_or_error(run)
+    if rc is not None:
+        return rc
     _print(result)
     return 0 if result.get("passed") else 1
 
@@ -662,6 +693,14 @@ def _cmd_adversarial_generate(args: argparse.Namespace) -> int:
 
 
 def _cmd_adversarial_review(args: argparse.Namespace) -> int:
+    if args.approve and args.reject:
+        _print(
+            {
+                "error": "conflicting_decision",
+                "detail": "pass only one of --approve / --reject",
+            }
+        )
+        return 2
     if not (args.approve or args.reject):
         # No decision given -> just list pending cases for review.
         async def list_body(session: AsyncSession):

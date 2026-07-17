@@ -32,10 +32,13 @@ def tagwise_attribution(
     for tag in sorted(tags):
         b_scores = [float(r.score) for r in baseline if tag in _record_tags(r)]
         c_scores = [float(r.score) for r in candidate if tag in _record_tags(r)]
-        if not b_scores and not c_scores:
+        # A tag present on only one side has no comparable other side; imputing a
+        # 0.0 mean there would fabricate a full-magnitude ±delta (a phantom
+        # regression/improvement). Only attribute tags that appear in both runs.
+        if not b_scores or not c_scores:
             continue
-        b_mean = float(np.mean(b_scores)) if b_scores else 0.0
-        c_mean = float(np.mean(c_scores)) if c_scores else 0.0
+        b_mean = float(np.mean(b_scores))
+        c_mean = float(np.mean(c_scores))
         out[tag] = {
             "baseline": b_mean,
             "candidate": c_mean,

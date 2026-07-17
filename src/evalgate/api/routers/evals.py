@@ -19,18 +19,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.api.deps import SessionDep
 from evalgate.core.schemas import EvalRecord, GateReport
 from evalgate.db.models import EvalResultRow, EvalRunRow
-from evalgate.db.session import get_session
 from evalgate.gate.decision import build_gate_report
 from evalgate.judge import persistence
 
 router = APIRouter()
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 class EvalRunRequest(BaseModel):

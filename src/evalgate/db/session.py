@@ -20,7 +20,17 @@ from evalgate.core.config import get_settings
 
 def make_engine() -> AsyncEngine:
     settings = get_settings()
-    return create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
+    kwargs: dict[str, object] = {"echo": False, "pool_pre_ping": True}
+    # SQLite (aiosqlite / in-memory test DBs) rejects QueuePool sizing kwargs;
+    # only tune the pool for real server databases.
+    if not settings.database_url.startswith("sqlite"):
+        kwargs.update(
+            pool_size=10,
+            max_overflow=20,
+            pool_timeout=30,
+            pool_recycle=1800,  # recycle < typical cloud idle-connection cutoff
+        )
+    return create_async_engine(settings.database_url, **kwargs)
 
 
 engine: AsyncEngine = make_engine()

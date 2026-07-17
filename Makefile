@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke adversarial-smoke sequential-smoke calibration-smoke kappa-smoke docker-build tf-init tf-plan tf-apply tf-destroy deploy deploy-migrate clean
+.PHONY: help install dev test coverage typecheck audit lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke adversarial-smoke sequential-smoke calibration-smoke kappa-smoke docker-build tf-init tf-plan tf-apply tf-destroy deploy deploy-migrate clean
 
 TF_DIR ?= deploy/terraform
 IMAGE ?= evalgate:local
@@ -14,9 +14,19 @@ dev: db-up  ## Start local dev stack (Postgres for now)
 test:  ## Run pytest
 	uv run pytest
 
-lint:  ## Ruff check + format check (no writes)
+coverage:  ## Run pytest with coverage report
+	uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+typecheck:  ## Static type check (mypy)
+	uv run mypy
+
+audit:  ## Scan dependencies for known vulnerabilities
+	uv run pip-audit
+
+lint:  ## Ruff check + format check + mypy (no writes)
 	uv run ruff check .
 	uv run ruff format --check .
+	uv run mypy
 
 format:  ## Auto-fix lint + format
 	uv run ruff check --fix .

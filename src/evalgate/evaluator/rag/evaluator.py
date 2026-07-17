@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import statistics
 from typing import Any
 
 from evalgate.db.models import EvalCaseRow
@@ -35,7 +36,7 @@ from evalgate.evaluator.base import EvaluationOutcome
 from evalgate.evaluator.rag.retriever import EmbeddingRetriever
 from evalgate.judge.candidate import run_candidate
 from evalgate.judge.prompt_spec import PromptSpec
-from evalgate.judge.protocol import JudgeCallRecord
+from evalgate.judge.protocol import MAX_STD_SCORE_SPREAD, JudgeCallRecord
 
 
 def _question_for(case: EvalCaseRow) -> str:
@@ -297,7 +298,7 @@ def _build_metrics(names: list[str], llm: Any, embeddings: Any) -> list[Any]:
         with contextlib.suppress(AttributeError):
             base.llm = llm
         with contextlib.suppress(AttributeError):
-            base.embeddings = embeddings
+            base.embeddings = embeddings  # type: ignore[attr-defined]
         out.append(base)
     return out
 
@@ -317,7 +318,7 @@ def _extract_scores(result: Any, requested: list[str]) -> dict[str, float]:
         value: float | None = None
         for alias in name_aliases.get(canonical, (canonical,)):
             try:
-                v = result[alias]  # type: ignore[index]
+                v = result[alias]
             except (KeyError, TypeError, IndexError):
                 v = None
             if v is None:
@@ -353,11 +354,9 @@ def _confidence_from_sub_metrics(sub_metrics: dict[str, float]) -> float:
     """Confidence proxy: 1 - normalised stdev across metrics. When all
     three RAG metrics agree, we trust the score; when they diverge
     (e.g. perfect faithfulness but garbage context_precision), confidence
-    drops. Cheap and matches the MultiJudge cross-judge spread term."""
+    drops. Reuses the same population-stdev + ``MAX_STD_SCORE_SPREAD``
+    normalisation as the MultiJudge cross-judge spread term."""
     if len(sub_metrics) < 2:
         return 1.0
-    vals = list(sub_metrics.values())
-    mean = sum(vals) / len(vals)
-    variance = sum((v - mean) ** 2 for v in vals) / len(vals)
-    std = variance**0.5
-    return max(0.0, 1.0 - (std / 0.5))
+    std = statistics.pstdev(sub_metrics.values())
+    return max(0.0, 1.0 - (std / MAX_STD_SCORE_SPREAD))

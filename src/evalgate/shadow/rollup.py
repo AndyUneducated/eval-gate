@@ -58,7 +58,12 @@ async def compute_live_report(
     """Compute (but don't persist) a rolling report for the trailing window."""
     now = datetime.now(UTC)
     window_start = now - timedelta(hours=window_hours)
-    obs = await persistence.list_observations(session, candidate_prompt_hash=candidate_prompt_hash)
+    # Bound the scan DB-side (``since``) so a long-lived candidate hash doesn't
+    # load its entire history into memory; the Python ``_within_window`` re-pass
+    # only guards the naive-vs-aware timestamp edge on SQLite.
+    obs = await persistence.list_observations(
+        session, candidate_prompt_hash=candidate_prompt_hash, since=window_start
+    )
     obs = _within_window(obs, window_start=window_start)
     report = compute_shadow_report(obs)
     return report, obs, window_start, now

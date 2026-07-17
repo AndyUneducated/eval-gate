@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from evalgate.judge.prompt_spec import JailbreakDetectorSpec
-from evalgate.judge.protocol import thinking_off_kwargs
+from evalgate.judge.protocol import DEFAULT_LLM_TIMEOUT_S, thinking_off_kwargs
 from evalgate.safety.detector import JailbreakInputResult, JailbreakOutputResult
 
 _logger = logging.getLogger(__name__)
@@ -186,11 +186,15 @@ async def _classifier_compliance(
         "messages": messages,
         "temperature": 0.0,
         "max_tokens": 120,
+        "timeout": DEFAULT_LLM_TIMEOUT_S,
     }
+    call_kwargs.setdefault("response_format", {"type": "json_object"})
     for key, value in thinking_off_kwargs(model).items():
         call_kwargs.setdefault(key, value)
     completion = await litellm.acompletion(**call_kwargs)
-    raw_text = completion["choices"][0]["message"]["content"]
+    # A provider can return ``content: null``; coerce to "" so downstream
+    # parsing/heuristic never hits ``None.strip()``.
+    raw_text = completion["choices"][0]["message"]["content"] or ""
     payload = _safe_load_json(raw_text)
     if not isinstance(payload, dict) or "complied" not in payload:
         # Bad JSON: fall back to heuristic on the model output (not on raw).

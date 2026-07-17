@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
+
+import litellm
 
 from evalgate.evaluator.agent.parser import ActionParseError, parse_action
 from evalgate.evaluator.agent.tools import BuiltinToolRegistry
@@ -34,15 +37,20 @@ class AgentRuntime:
         messages = _bootstrap_messages(self._spec, case_input, allowed_tools=self._registry.names)
         steps: list[TrajectoryStep] = []
         llm_calls: list[dict[str, Any]] = []
+        total_cost = 0.0
+        total_latency_ms = 0
 
         for step_idx in range(self._runtime.max_steps):
             mock_response = _mock_action(step_idx, self._registry.names) if use_mock else None
+            t0 = time.perf_counter()
             text, raw = await acompletion_json(
                 model=self.planner_model,
                 messages=messages,
                 params=self._spec.candidate.params,
                 mock_response=mock_response,
             )
+            total_latency_ms += int((time.perf_counter() - t0) * 1000)
+            total_cost += _safe_cost(raw)
             llm_calls.append({"step_idx": step_idx, "response_text": text, "raw": raw})
             messages.append({"role": "assistant", "content": text})
 
@@ -54,6 +62,8 @@ class AgentRuntime:
                     steps=steps,
                     llm_calls=llm_calls,
                     stopped_reason=f"action_parse_error: {exc}",
+                    cost_usd=total_cost,
+                    latency_ms=total_latency_ms,
                 )
 
             if action.action == "final_answer":
@@ -61,6 +71,8 @@ class AgentRuntime:
                     final_answer=action.answer or "",
                     steps=steps,
                     llm_calls=llm_calls,
+                    cost_usd=total_cost,
+                    latency_ms=total_latency_ms,
                 )
 
             assert action.tool is not None
@@ -95,7 +107,20 @@ class AgentRuntime:
             steps=steps,
             llm_calls=llm_calls,
             stopped_reason=f"max_steps_exceeded:{self._runtime.max_steps}",
+            cost_usd=total_cost,
+            latency_ms=total_latency_ms,
         )
+
+
+def _safe_cost(raw: Any) -> float:
+    """Best-effort per-call cost; 0.0 for mock / un-priced models (mirrors
+    ``judge.candidate._safe_cost`` but reads the serialized response dict)."""
+    if not raw or not isinstance(raw, dict) or raw.get("error"):
+        return 0.0
+    try:
+        return float(litellm.completion_cost(completion_response=raw) or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _bootstrap_messages(

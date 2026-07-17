@@ -39,6 +39,27 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
+    # --- API surface hardening -------------------------------------------- #
+    # When set, every ``/v1/*`` route requires ``Authorization: Bearer <key>``
+    # or ``X-API-Key: <key>``. Unset (the local/dev default) leaves the API
+    # open — set it in any deployed environment.
+    api_key: str | None = Field(default=None, validation_alias="EVALGATE_API_KEY")
+    # Comma-separated CORS allow-list for browser clients (empty = none).
+    cors_allow_origins: str = Field(default="", validation_alias="EVALGATE_CORS_ALLOW_ORIGINS")
+    # Reject request bodies larger than this (bytes) before reading them, so an
+    # unbounded OTLP/ingest POST can't exhaust memory. Default 25 MiB.
+    max_request_bytes: int = Field(
+        default=25 * 1024 * 1024, validation_alias="EVALGATE_MAX_REQUEST_BYTES"
+    )
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    def dev_routes_enabled(self) -> bool:
+        """Dev/seed routes ship only outside real deployments."""
+        return self.env.lower() in {"local", "dev", "test"}
+
     # Phase 13 Shadow Mode: Slack-compatible incoming-webhook URL. When a
     # rolling shadow report shows a regressed axis, ``shadow.alert`` POSTs a
     # ``{"text": ...}`` payload here. Unset -> alerts degrade to a structlog

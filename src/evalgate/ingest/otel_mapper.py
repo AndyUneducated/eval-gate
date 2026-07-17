@@ -92,7 +92,10 @@ def map_otel_span(raw: dict[str, Any]) -> Span:
     name = raw.get("name") or "unnamed"
 
     attributes = _attrs_from_payload(raw.get("attributes"))
-    kind_hint = raw.get("kind") or attributes.get("evalgate.kind")
+    # An explicit ``evalgate.kind`` attribute is our semantic kind and wins over
+    # the coarse OTLP SpanKind enum (server/client/…) that ``raw["kind"]`` now
+    # carries from the protobuf path.
+    kind_hint = attributes.get("evalgate.kind") or raw.get("kind")
     kind = _normalize_kind(kind_hint)
 
     start_ts = _parse_timestamp(raw.get("start_time") or raw.get("start_time_unix_nano"))

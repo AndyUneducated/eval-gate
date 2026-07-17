@@ -13,22 +13,20 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from evalgate.api.deps import SessionDep
 from evalgate.badcase import finder
 from evalgate.badcase import repository as badcase_repo
 from evalgate.core.config import is_mock_llm
 from evalgate.core.logging import get_logger
 from evalgate.core.schemas import BadCaseOut, PromotionOut
-from evalgate.db.session import get_session
 
 log = get_logger("evalgate.api.badcase")
 router = APIRouter()
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-_VALID_STRATEGIES = ("uncertainty", "outlier", "llm")
+_VALID_STRATEGIES = finder.VALID_STRATEGIES
 
 
 class BadCaseListResponse(BaseModel):

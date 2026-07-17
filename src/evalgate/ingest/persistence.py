@@ -34,6 +34,7 @@ from evalgate.db.models import SpanRow, TraceRow
 def _bulk_upsert_spans(session: AsyncSession, rows: list[dict[str, Any]]):
     """Return a dialect-appropriate INSERT … ON CONFLICT DO NOTHING for spans."""
     dialect = session.bind.dialect.name if session.bind else "postgresql"
+    stmt: Any
     if dialect == "sqlite":
         stmt = sqlite_insert(SpanRow).values(rows)
         return stmt.on_conflict_do_nothing(index_elements=["span_id"])
@@ -41,43 +42,41 @@ def _bulk_upsert_spans(session: AsyncSession, rows: list[dict[str, Any]]):
     return stmt.on_conflict_do_nothing(index_elements=["span_id"])
 
 
-def _trace_upsert(session: AsyncSession, row: dict[str, Any]):
+def _trace_upsert(session: AsyncSession, row: dict[str, Any], *, has_resource_attrs: bool):
     """Return a dialect-appropriate UPSERT statement for the `traces` rollup.
 
-    The caller has already recomputed `start_time` / `end_time` / `span_count`
-    from the authoritative `spans` table for this trace, so on conflict we
-    just overwrite with the freshly-computed values. `root_span_id` /
-    `service_name` / `resource_attributes` are kept stable across replays
-    (first non-null wins).
+    On conflict we **converge** rather than overwrite: ``start_time`` takes the
+    min, ``end_time`` / ``span_count`` the max of (stored, incoming). This keeps
+    concurrent partial-trace deliveries (each seeing only its own uncommitted
+    spans under READ COMMITTED) from clobbering each other with an undercount.
+    ``root_span_id`` / ``service_name`` keep the first non-null; the identical
+    ``set_`` runs on both dialects (SQLite ``max``/``min`` are scalar
+    greatest/least; Postgres uses ``greatest``/``least``).
+    ``resource_attributes`` is overwritten only when the incoming payload
+    actually carries some (``has_resource_attrs``) — an empty ``{}`` must not
+    clobber previously-stored attributes.
     """
     dialect = session.bind.dialect.name if session.bind else "postgresql"
-    base_set = {
-        "start_time": "start_time",
-        "end_time": "end_time",
-        "span_count": "span_count",
-    }
+    stmt: Any
+    greatest: Any
+    least: Any
     if dialect == "sqlite":
         stmt = sqlite_insert(TraceRow).values(row)
-        return stmt.on_conflict_do_update(
-            index_elements=["trace_id"],
-            set_={
-                **{k: getattr(stmt.excluded, v) for k, v in base_set.items()},
-                "root_span_id": func.coalesce(TraceRow.root_span_id, stmt.excluded.root_span_id),
-                "service_name": func.coalesce(TraceRow.service_name, stmt.excluded.service_name),
-            },
-        )
-    stmt = pg_insert(TraceRow).values(row)
-    return stmt.on_conflict_do_update(
-        index_elements=["trace_id"],
-        set_={
-            **{k: getattr(stmt.excluded, v) for k, v in base_set.items()},
-            "root_span_id": func.coalesce(TraceRow.root_span_id, stmt.excluded.root_span_id),
-            "service_name": func.coalesce(TraceRow.service_name, stmt.excluded.service_name),
-            "resource_attributes": func.coalesce(
-                stmt.excluded.resource_attributes, TraceRow.resource_attributes
-            ),
-        },
-    )
+        greatest, least = func.max, func.min
+    else:
+        stmt = pg_insert(TraceRow).values(row)
+        greatest, least = func.greatest, func.least
+    excluded = stmt.excluded
+    set_: dict[str, Any] = {
+        "start_time": least(TraceRow.start_time, excluded.start_time),
+        "end_time": greatest(TraceRow.end_time, excluded.end_time),
+        "span_count": greatest(TraceRow.span_count, excluded.span_count),
+        "root_span_id": func.coalesce(TraceRow.root_span_id, excluded.root_span_id),
+        "service_name": func.coalesce(TraceRow.service_name, excluded.service_name),
+    }
+    if has_resource_attrs:
+        set_["resource_attributes"] = excluded.resource_attributes
+    return stmt.on_conflict_do_update(index_elements=["trace_id"], set_=set_)
 
 
 async def persist_spans(
@@ -136,7 +135,7 @@ async def persist_spans(
             "span_count": int(span_count),
             "resource_attributes": dict(resource_attrs or {}),
         }
-        await session.execute(_trace_upsert(session, row))
+        await session.execute(_trace_upsert(session, row, has_resource_attrs=bool(resource_attrs)))
 
     await session.commit()
     return sorted(by_trace.keys())

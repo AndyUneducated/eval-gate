@@ -53,6 +53,18 @@ class BadDecisionError(EvalGateError, ValueError):
     slug = "bad_decision"
 
 
+class CaseNotReviewableError(EvalGateError):
+    """Raised when the target case isn't a *pending adversarial* case.
+
+    Guards the review lifecycle so a human decision can't (a) archive a live
+    hand-authored / promoted case, or (b) re-review an already-decided case.
+    """
+
+    http_status = 409
+    exit_code = 2
+    slug = "case_not_reviewable"
+
+
 @dataclass
 class AdversarialStats:
     """Hit-rate over approved adversarial cases in a set."""
@@ -170,8 +182,10 @@ async def list_pending(session: AsyncSession, *, set_id_or_name: str) -> list[Ev
 async def review_case(session: AsyncSession, *, case_id: str, decision: str) -> EvalCaseRow:
     """Flip a pending case to ``active`` (approve) or ``archived`` (reject).
 
-    Raises :class:`CaseNotFoundError` (→ 404) for an unknown id and
-    ``ValueError`` (→ 422) for a decision other than ``approve`` / ``reject``.
+    Raises :class:`CaseNotFoundError` (→ 404) for an unknown id,
+    :class:`BadDecisionError` (→ 422) for a decision other than ``approve`` /
+    ``reject``, and :class:`CaseNotReviewableError` (→ 409) when the target
+    isn't a *pending adversarial* case.
     """
     target = _REVIEW_DECISIONS.get(decision)
     if target is None:
@@ -181,6 +195,14 @@ async def review_case(session: AsyncSession, *, case_id: str, decision: str) -> 
     row = await session.get(EvalCaseRow, case_id)
     if row is None:
         raise CaseNotFoundError(f"no eval_case with id {case_id!r}")
+    if row.source != CaseSource.adversarial.value:
+        raise CaseNotReviewableError(
+            f"case {case_id!r} is source={row.source!r}, not an adversarial case"
+        )
+    if row.status != CaseStatus.pending.value:
+        raise CaseNotReviewableError(
+            f"case {case_id!r} is status={row.status!r}, not pending review"
+        )
     row.status = target.value
     await session.commit()
     await session.refresh(row)

@@ -200,7 +200,11 @@ async def run_eval(
     ):
         records.append(rec)
 
-    mean = sum(r.score for r in records) / len(records) if records else None
+    # Exclude cases that *failed to evaluate* (unsupported task / missing
+    # reference / runner failure — all scored 0.0) from the headline quality
+    # mean, so "couldn't be judged" isn't conflated with "judged as bad".
+    scored = [r.score for r in records if not r.error]
+    mean = sum(scored) / len(scored) if scored else None
     await persistence.finalize_run(
         session,
         run.id,

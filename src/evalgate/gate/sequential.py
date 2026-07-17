@@ -222,12 +222,14 @@ async def run_sequential_gate(
     decision: seq.Decision | None = None
 
     async for rec in stream:
-        candidate_consumed.append(_record_to_dict(rec))
         base = baseline.get(rec.case_id)
         if base is None:
-            # Unpaired candidate case (not in baseline) — judged, but it doesn't
-            # advance the sequential test.
+            # Unpaired candidate case (not in baseline) — still judged + persisted
+            # by iter_eval, but excluded from both the sequential test and the
+            # fixed-N snapshot so baseline/candidate cover the same population
+            # (otherwise cost/latency/safety would compare mismatched case sets).
             continue
+        candidate_consumed.append(_record_to_dict(rec))
         baseline_consumed.append(base)
         res = gate.update(rec.score - float(base["score"]))
         if res in (seq.Decision.fail, seq.Decision.pass_):

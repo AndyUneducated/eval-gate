@@ -65,7 +65,7 @@ class ReliabilityPoint:
 
 
 def reliability_curve(
-    scores: Sequence[float],
+    scores: Sequence[float] | np.ndarray,
     labels: Sequence[int],
     n_bins: int = DEFAULT_N_BINS,
 ) -> list[ReliabilityPoint]:
@@ -97,7 +97,7 @@ def reliability_curve(
 
 
 def expected_calibration_error(
-    scores: Sequence[float],
+    scores: Sequence[float] | np.ndarray,
     labels: Sequence[int],
     n_bins: int = DEFAULT_N_BINS,
 ) -> float:
@@ -110,7 +110,7 @@ def expected_calibration_error(
 
 
 def max_calibration_error(
-    scores: Sequence[float],
+    scores: Sequence[float] | np.ndarray,
     labels: Sequence[int],
     n_bins: int = DEFAULT_N_BINS,
 ) -> float:

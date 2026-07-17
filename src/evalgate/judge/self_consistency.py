@@ -27,19 +27,31 @@ from evalgate.judge.protocol import MAX_STD_SCORE_SPREAD, JudgeCallRecord, LeafJ
 
 @dataclass
 class SelfConsistencyVerdict:
-    mean_score: float
+    # ``None`` iff *every* run failed at transport (no usable score at all);
+    # MultiJudge drops such a sub-judge instead of folding a bogus number in.
+    mean_score: float | None
     confidence: float
     per_run_scores: list[float]
     agreements: list[bool] | None
 
 
 class SelfConsistencyJudge:
-    def __init__(self, leaf: LeafJudge, *, k: int, concurrency: int = 4):
+    def __init__(
+        self,
+        leaf: LeafJudge,
+        *,
+        k: int,
+        concurrency: int = 4,
+        semaphore: asyncio.Semaphore | None = None,
+    ):
         if k < 1:
             raise ValueError("k must be >= 1")
         self.leaf = leaf
         self.k = k
-        self.semaphore = asyncio.Semaphore(concurrency)
+        # A caller-supplied semaphore is shared across the whole judge stack so
+        # total in-flight LLM calls are bounded by ``concurrency`` — not
+        # ``concurrency²`` (which nested per-judge semaphores would allow).
+        self.semaphore = semaphore or asyncio.Semaphore(concurrency)
 
     async def score(
         self,
@@ -59,21 +71,29 @@ class SelfConsistencyJudge:
                     mock=mock,
                 )
 
-        results = await asyncio.gather(*(one(i) for i in range(self.k)))
-        scores = [r.score for r in results]
-        agreements_raw = [r.agreement for r in results]
+        results = await asyncio.gather(*(one(i) for i in range(self.k)), return_exceptions=True)
+        verdicts = [r for r in results if isinstance(r, LeafVerdict)]
+        # Exclude no-signal runs (transport-failed leaf calls -> score None).
+        scores = [r.score for r in verdicts if r.score is not None]
+        agreements_raw = [r.agreement for r in verdicts]
         agreements: list[bool] | None = (
             [bool(a) for a in agreements_raw]
             if any(a is not None for a in agreements_raw)
             else None
         )
         calls: list[JudgeCallRecord] = []
-        for r in results:
+        for r in verdicts:
             calls.extend(r.calls)
 
-        mean = sum(scores) / len(scores)
-        std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-        confidence = max(0.0, 1.0 - (std / MAX_STD_SCORE_SPREAD))
+        if scores:
+            mean: float | None = sum(scores) / len(scores)
+            std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+            confidence = max(0.0, 1.0 - (std / MAX_STD_SCORE_SPREAD))
+        else:
+            # Every run failed — no signal. Confidence 0 keeps this sub-judge
+            # from influencing the aggregate confidence downstream.
+            mean = None
+            confidence = 0.0
 
         verdict = SelfConsistencyVerdict(
             mean_score=mean,

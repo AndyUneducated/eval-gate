@@ -24,7 +24,7 @@ from the top.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
@@ -36,6 +36,10 @@ from evalgate.judge.protocol import acompletion_json
 from evalgate.report.calibration import Calibrator
 
 MIN_FOR_PERCENTILE = 4  # below this n, p95 has no statistical meaning
+
+# Single source of truth for the badcase strategy names (CLI + REST validate
+# against this, and :func:`find` dispatches on it).
+VALID_STRATEGIES: tuple[str, ...] = ("uncertainty", "outlier", "llm")
 
 
 @dataclass
@@ -54,14 +58,6 @@ class BadCase:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass
-class _RowFacts:
-    """Compact projection used internally — avoids dragging full ORM rows."""
-
-    row: EvalResultRow
-    output_text: str = field(default="")
 
 
 async def _load_rows(session: AsyncSession, *, run_id: str | None) -> list[EvalResultRow]:
@@ -180,7 +176,7 @@ async def find_outlier(
     lat_p95 = _percentile_or_none(latencies, q=95)
     cost_p95 = _percentile_or_none(costs, q=95)
 
-    flagged: list[tuple[float, EvalResultRow, str]] = []
+    flagged: list[tuple[tuple[int, float, int], EvalResultRow, str]] = []
     for r in rows:
         reasons: list[str] = []
         if float(r.score) == 0.0:
@@ -272,16 +268,29 @@ async def find_llm(
     if not candidates:
         return []
 
-    # Need each candidate's row to recover input/output for the classifier.
+    # Fetch only the candidate rows (bounded ``IN`` query) rather than
+    # re-scanning the whole table a second time.
+    from evalgate.db.models import EvalCaseRow
+
+    cand_ids = [c.eval_result_id for c in candidates]
     by_id = {
         r.id: r
-        for r in await _load_rows(session, run_id=run_id)
-        if r.id in {c.eval_result_id for c in candidates}
+        for r in (
+            await session.execute(select(EvalResultRow).where(EvalResultRow.id.in_(cand_ids)))
+        ).scalars()
     }
 
-    # Look up case.input via EvalCaseRow when available; otherwise pass {} —
-    # the classifier degrades gracefully.
-    from evalgate.db.models import EvalCaseRow
+    # Batch-load the backing cases in one query (avoids an N+1 ``session.get``
+    # per candidate); pass {} when a case is missing — the classifier degrades.
+    case_ids = {r.eval_case_id for r in by_id.values() if r.eval_case_id}
+    cases_by_id: dict[str, EvalCaseRow] = {}
+    if case_ids:
+        cases_by_id = {
+            c.id: c
+            for c in (
+                await session.execute(select(EvalCaseRow).where(EvalCaseRow.id.in_(case_ids)))
+            ).scalars()
+        }
 
     out: list[BadCase] = []
     for c in candidates:
@@ -292,7 +301,7 @@ async def find_llm(
             continue
         case_input: dict[str, Any] = {}
         if row.eval_case_id:
-            case = await session.get(EvalCaseRow, row.eval_case_id)
+            case = cases_by_id.get(row.eval_case_id)
             if case is not None:
                 case_input = dict(case.input or {})
         label = await _classify_subtle_bad(
@@ -324,6 +333,10 @@ async def find(
     calibrator: Calibrator | None = None,
 ) -> list[BadCase]:
     """Dispatch by strategy name. Raises ``ValueError`` on unknown strategy."""
+    if strategy not in VALID_STRATEGIES:
+        raise ValueError(
+            f"unknown badcase strategy {strategy!r}; expected one of {VALID_STRATEGIES}"
+        )
     if strategy == "uncertainty":
         return await find_uncertainty(session, run_id=run_id, limit=limit, calibrator=calibrator)
     if strategy == "outlier":
@@ -336,6 +349,5 @@ async def find(
             cheap_model=cheap_model,
             mock=mock,
         )
-    raise ValueError(
-        f"unknown badcase strategy {strategy!r}; expected one of uncertainty / outlier / llm"
-    )
+    # Unreachable: the guard above already rejected unknown strategies.
+    raise ValueError(f"unhandled badcase strategy {strategy!r}")

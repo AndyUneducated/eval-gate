@@ -391,7 +391,7 @@ def main() -> None:
 
         with EvalGateClient() as client:
             try:
-                trace_ids = client.seed_demo_trace(spec)  # type: ignore[arg-type]
+                trace_ids = client.seed_demo_trace(spec)
             except EvalGateAPIError as exc:
                 st.error(f"Seed failed ({exc.status_code}): {exc.detail}")
                 return

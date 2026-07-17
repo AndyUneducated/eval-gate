@@ -49,7 +49,9 @@ class Confusion:
         return self.tp + self.fp + self.fn + self.tn
 
 
-def confusion_counts(judge: Sequence[int], human: Sequence[int]) -> Confusion:
+def confusion_counts(
+    judge: Sequence[int] | np.ndarray, human: Sequence[int] | np.ndarray
+) -> Confusion:
     j = np.asarray(judge, dtype=int)
     h = np.asarray(human, dtype=int)
     if len(j) != len(h):

@@ -106,9 +106,11 @@ def test_sort_attribution_higher_is_worse_puts_spikes_first() -> None:
 def test_axis_direction_covers_all_four_gate_axes() -> None:
     # Mirrors evalgate.report.multi_axis.AXES — if the gate adds an axis
     # we want this test to force us to think about its UI direction.
-    assert set(AXIS_DIRECTION) == {"quality", "cost", "latency_p95"}
+    assert set(AXIS_DIRECTION) == {"quality", "cost", "latency_p95", "safety"}
     assert AXIS_DIRECTION["quality"] == "higher_is_better"
     assert AXIS_DIRECTION["cost"] == "lower_is_better"
+    # Safety metrics are rates of bad events -> a higher rate is a regression.
+    assert AXIS_DIRECTION["safety"] == "lower_is_better"
 
 
 def test_extract_axis_value_picks_right_field_per_axis() -> None:

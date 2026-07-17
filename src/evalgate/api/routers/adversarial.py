@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.adversarial import repository as adv_repo
+from evalgate.api.deps import SessionDep
 from evalgate.api.routers.eval_sets import _case_out
 from evalgate.core.config import get_settings, is_mock_llm
 from evalgate.core.logging import get_logger
@@ -29,11 +29,9 @@ from evalgate.core.schemas import (
     AdversarialStatsOut,
     EvalCaseOut,
 )
-from evalgate.db.session import get_session
 
 log = get_logger("evalgate.api.adversarial")
 router = APIRouter()
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 class AdversarialGenerateResponse(BaseModel):

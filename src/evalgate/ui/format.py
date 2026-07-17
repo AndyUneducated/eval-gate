@@ -32,6 +32,10 @@ AXIS_DIRECTION: dict[str, str] = {
     "quality": "higher_is_better",
     "cost": "lower_is_better",
     "latency_p95": "lower_is_better",
+    # Safety metrics are *rates of bad events* (PII leaks, jailbreak
+    # compliance): a higher rate is a regression. Omitting this defaulted to
+    # "higher_is_better", painting safety regressions green.
+    "safety": "lower_is_better",
 }
 
 

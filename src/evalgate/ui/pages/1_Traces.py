@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -21,7 +22,12 @@ def _render_span_tree(spans: list[dict]) -> None:
     def _walk(parent: str | None, depth: int) -> None:
         for span in by_parent.get(parent, []):
             indent = "&nbsp;" * (depth * 4)
-            label = f"{indent}**{span['name']}** · `{span['kind']}` · {span['span_id'][:8]}"
+            # Span name/kind are producer-controlled; escape before embedding in
+            # HTML-enabled markdown so a crafted span name can't inject markup.
+            name = html.escape(str(span.get("name", "")))
+            kind = html.escape(str(span.get("kind", "")))
+            sid = html.escape(str(span.get("span_id", ""))[:8])
+            label = f"{indent}**{name}** · `{kind}` · {sid}"
             st.markdown(label, unsafe_allow_html=True)
             with st.expander("attributes", expanded=False):
                 st.code(json.dumps(span.get("attributes", {}), indent=2))

@@ -14,15 +14,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Query, status
 
+from evalgate.api.deps import SessionDep
 from evalgate.core.schemas import GateReport, ShadowObserveRequest, ShadowReportOut
-from evalgate.db.session import get_session
 from evalgate.shadow import persistence, rollup
 
 router = APIRouter()
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 @router.post("/shadow/observe", status_code=status.HTTP_202_ACCEPTED)

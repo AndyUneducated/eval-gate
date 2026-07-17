@@ -33,6 +33,11 @@ _SCORE_RE = re.compile(r'"?score"?\s*(?:[:=]|\bis\b)\s*([0-9]*\.?[0-9]+)', re.IG
 # and multi-judge confidence spread terms.
 MAX_STD_SCORE_SPREAD = 0.5
 
+# Default per-call wall-clock budget (seconds). A hung provider connection
+# would otherwise block a judge fan-out (and the CI gate) indefinitely; callers
+# can still override via ``params={"timeout": ...}``.
+DEFAULT_LLM_TIMEOUT_S = 60.0
+
 
 # Provider-specific kwargs that force thinking OFF. Applied via `setdefault`
 # at every LLM call site, so user-supplied `params: {think: true}` (Ollama)
@@ -76,9 +81,15 @@ def thinking_off_kwargs(model: str) -> dict[str, Any]:
 
 @dataclass
 class LeafVerdict:
-    """Unified return from a leaf judge (pointwise or position-swap)."""
+    """Unified return from a leaf judge (pointwise or position-swap).
 
-    score: float
+    ``score`` is ``None`` when the underlying judge call failed at transport
+    (empty completion) — a *no-signal* marker that self-consistency /
+    multi-judge exclude from their mean/std rather than folding in as a hard
+    ``0.0`` (which would both bias the score and inflate the spread).
+    """
+
+    score: float | None
     agreement: bool | None
     calls: list[JudgeCallRecord]
 
@@ -138,6 +149,7 @@ async def acompletion_json(
         **(params or {}),
     }
     kwargs.setdefault("response_format", {"type": "json_object"})
+    kwargs.setdefault("timeout", DEFAULT_LLM_TIMEOUT_S)
     for key, value in thinking_off_kwargs(model).items():
         kwargs.setdefault(key, value)
     if mock_response is not None:
@@ -181,6 +193,11 @@ def parse_winner(text: str) -> tuple[str | None, str]:
 
     Expects ``{"winner": "A"|"B"|"tie", "reason": "..."}``. Falls back to
     case-insensitive regex on the raw text. Unknown -> ``(None, raw_text)``.
+
+    The prose fallback is **anchored** to the word "winner": we only trust the
+    first A/B/tie token that appears *after* it. Grabbing the first standalone
+    token anywhere would misread e.g. "Neither A nor B is clearly better" as an
+    A win; an unanchored token is treated as no-verdict (neutral) instead.
     """
     if not text:
         return None, ""
@@ -192,9 +209,11 @@ def parse_winner(text: str) -> tuple[str | None, str]:
     except (json.JSONDecodeError, TypeError):
         pass
 
-    m = re.search(r"\b(A|B|tie|draw)\b", text, re.IGNORECASE)
-    if m:
-        return _normalise_winner(m.group(1)), text.strip()[:500]
+    anchor = re.search(r"\bwinner\b", text, re.IGNORECASE)
+    if anchor:
+        m = re.search(r"\b(A|B|tie|draw)\b", text[anchor.end() :], re.IGNORECASE)
+        if m:
+            return _normalise_winner(m.group(1)), text.strip()[:500]
     return None, text.strip()[:500]
 
 

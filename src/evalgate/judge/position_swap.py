@@ -51,9 +51,11 @@ class PositionSwapJudge:
 
         if not self.enabled:
             score = _winner_to_score(v_a.winner, candidate_is="A")
+            # A tie is *not* agreement (matches the enabled two-order path,
+            # where a tie yields agreement=False).
             return LeafVerdict(
                 score=score,
-                agreement=v_a.winner in {"A", "B", "tie"},
+                agreement=v_a.winner in {"A", "B"},
                 calls=calls,
             )
 

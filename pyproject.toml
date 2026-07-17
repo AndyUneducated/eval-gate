@@ -14,6 +14,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Quality Assurance",
 ]
+# Lean core: API + gate + ingest + judge stack. The heavier, feature-specific
+# stacks (RAG, PII safety, the Streamlit UI, plotting) live in optional extras
+# below and are imported lazily, so `pip install evalgate` stays slim.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -24,17 +27,34 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.13",
     "numpy>=2.1",
-    "matplotlib>=3.9",
     "opentelemetry-proto>=1.30",
     "protobuf>=5",
     "litellm>=1.60",
     "pyyaml>=6",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# RAG evaluator (ragas + langchain adapters). Enable with evalgate[rag].
+rag = [
+    "ragas>=0.2,<0.4",
+    "datasets>=2.14",
+    "langchain-core>=0.3",
+]
+# PII detection in the safety pipeline. Enable with evalgate[safety].
+safety = ["presidio-analyzer>=2.2,<3"]
+# Streamlit operator UI. Enable with evalgate[ui].
+ui = ["streamlit>=1.40"]
+# Reliability-diagram PNGs for calibration reports. Enable with evalgate[viz].
+viz = ["matplotlib>=3.9"]
+# Everything, for a full-feature install / dev.
+all = [
     "ragas>=0.2,<0.4",
     "datasets>=2.14",
     "langchain-core>=0.3",
     "presidio-analyzer>=2.2,<3",
     "streamlit>=1.40",
-    "httpx>=0.27",
+    "matplotlib>=3.9",
 ]
 
 [project.scripts]
@@ -42,15 +62,25 @@ evalgate = "evalgate.cli:main"
 evalgate-api = "evalgate.api.main:run"
 
 [dependency-groups]
+# The dev group pulls in every optional extra so `uv sync` gives a full test env.
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
     "ruff>=0.8",
+    "mypy>=1.13",
+    "pip-audit>=2.7",
     "pre-commit>=4.0",
     "aiosqlite>=0.20",
     "opentelemetry-api>=1.30",
     "opentelemetry-sdk>=1.30",
     "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "ragas>=0.2,<0.4",
+    "datasets>=2.14",
+    "langchain-core>=0.3",
+    "presidio-analyzer>=2.2,<3",
+    "streamlit>=1.40",
+    "matplotlib>=3.9",
 ]
 
 [build-system]
@@ -93,3 +123,26 @@ testpaths = ["tests"]
 addopts = "-ra -q --strict-markers"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/evalgate"]
+# Pragmatic gradual typing: don't fail on third-party stubs, do catch obvious
+# mistakes inside annotated code. Tighten module-by-module over time.
+ignore_missing_imports = true
+namespace_packages = true
+explicit_package_bases = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# Migrations are Alembic-generated; skip them.
+exclude = ["src/evalgate/db/migrations/"]
+
+[tool.coverage.run]
+source = ["src/evalgate"]
+branch = true
+omit = ["src/evalgate/ui/*", "src/evalgate/db/migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

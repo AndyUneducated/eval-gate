@@ -57,6 +57,11 @@ class JudgePolicySpec(BaseModel):
 
 
 RagMetricName = Literal["faithfulness", "context_precision", "answer_relevance"]
+_DEFAULT_RAG_METRICS: list[RagMetricName] = [
+    "faithfulness",
+    "context_precision",
+    "answer_relevance",
+]
 
 
 class RetrieverSpec(BaseModel):
@@ -82,7 +87,7 @@ class RagEvaluatorSpec(BaseModel):
     llm_model: str
     embedding_model: str
     metrics: list[RagMetricName] = Field(
-        default_factory=lambda: ["faithfulness", "context_precision", "answer_relevance"],
+        default_factory=lambda: list(_DEFAULT_RAG_METRICS),
         min_length=1,
     )
 

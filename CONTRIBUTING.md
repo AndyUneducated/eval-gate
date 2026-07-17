@@ -1,78 +1,58 @@
-# 贡献指南 / Contributing
+# Contributing to EvalGate
 
-欢迎为 EvalGate 提 issue 或 PR —— 尤其欢迎以下方向：
+Thanks for your interest in improving EvalGate! This guide covers the local
+workflow and the checks CI enforces.
 
-- 新增 judge 任务（RAG / Agent 之外的任务类型）。
-- 补充新的卡口维度（quality / cost / latency / safety 之外）。
-- 为非 OTel 的 trace 源写 adapter（OpenAI Evals、LangSmith、自家 trace 表 ……）。
+## Development setup
 
-## 1. 准备本地环境
+EvalGate uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-# 装 uv —— https://docs.astral.sh/uv/
-uv sync   # 同时安装 runtime + dev 组（pytest、ruff、pre-commit、OTel SDK）
-
-# 起本地 Postgres
-make db-up
-
-# 跑 migrations
+uv sync                # install core + dev deps (all optional extras)
+make db-up             # start local Postgres (docker compose)
 uv run alembic upgrade head
 ```
 
-要求：
+## Before you open a PR
 
-- Python 3.12+
-- Docker（用于本地 Postgres）
-- 可选：本地 LLM 推理（Ollama / LiteLLM 配置），用于跑真实 judge 而不是 fixtures
-
-## 2. 提交前自检（与 CI 一致）
+Run the same gates CI runs:
 
 ```bash
-make lint        # ruff check + format 检查
-make test        # pytest（async-mode auto）
+make lint       # ruff check + ruff format --check + mypy
+make test       # pytest
+make coverage   # pytest with coverage report (optional locally)
 ```
 
-或者把 pre-commit 接进 git：
+Or the individual pieces:
 
 ```bash
-pre-commit install
+uv run ruff check .
+uv run ruff format .
+uv run mypy
+uv run pytest
 ```
 
-## 3. 数据库 schema 改动
+### Guidelines
 
-走 Alembic：
+- **Tests**: add or update tests for any behavior change. Unit tests run
+  against in-memory SQLite; Alembic migrations are validated against Postgres
+  in CI.
+- **Types**: `mypy` must pass. Prefer honest annotations over `# type: ignore`.
+- **Style**: `ruff` owns lint + format (line length 100). Don't hand-format.
+- **Commits/PRs**: keep them focused; describe the "why". Reference issues.
+- **Optional deps**: features that need `ragas` / `presidio` / `streamlit` /
+  `matplotlib` must import them lazily so the core install stays lean (see the
+  extras in `pyproject.toml`).
 
-```bash
-# 在干净 DB 上自动生成 migration
-uv run alembic revision --autogenerate -m "<msg>"
+## Offline / mock mode
 
-# 提交 migration 与对应的 model 改动放在同一个 commit 里
-```
+Set `EVALGATE_MOCK_LLM=1` to force fully-offline, deterministic LLM calls — this
+is what the smoke scripts and CI gate use. See the `*-smoke` targets in the
+`Makefile`.
 
-不要手动改已经合入 main 的 migration 文件 —— 写一个新的覆盖。
+## Reporting security issues
 
-## 4. 文档约定
+Please follow `SECURITY.md` — do not open public issues for vulnerabilities.
 
-- **关键技术决策**写到 [`DECISIONS.md`](DECISIONS.md)，按 ADR（Architecture Decision Record，架构决策记录）风格追加。
-- **产品级改动**（新增维度、改变 API 表面）写到 [`docs/design.md`](docs/design.md)。
-- **某个能力的技术方案**写到 [`docs/`](docs/) 下对应的 `PHASE_*_PLAN.md`（含图解 + 选型抉择）。
-
-## 5. Commit 信息
-
-- 用英文简短说明，遵循 conventional commits（`feat(scope):` / `fix(scope):` / `docs:` / `refactor(scope):` …）。
-- `scope` 推荐取自子模块名：`gate` / `judge` / `eval-sets` / `api` / `ui` / `ingest` …。
-- 一个 commit 只做一件事；跨模块改动尽量拆开。
-
-## 6. CI 必须通过
-
-每个 PR 都会跑：
-
-- `ci.yml`：lint + tests（不会跑真实 LLM）。
-- `eval-gate.yml`：多维度回归卡口；任何一个维度统计显著回归就 fail。
-
-## 7. 较大的提案
-
-新增卡口维度、改 API 兼容性、或调整 trace 表 schema 这类改动，
-**先开 issue 讨论方向**，避免实现完才发现要重做。
-
-—— 感谢贡献！
+By contributing you agree that your contributions are licensed under the
+project's Apache-2.0 license.

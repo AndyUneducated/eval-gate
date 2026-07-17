@@ -13,20 +13,18 @@ expects on success.
 from __future__ import annotations
 
 import json
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from google.protobuf.json_format import ParseError
+from google.protobuf.message import DecodeError
 
+from evalgate.api.deps import SessionDep
 from evalgate.core.logging import get_logger
-from evalgate.db.session import get_session
 from evalgate.ingest.otlp import parse_otlp_json, parse_otlp_protobuf
 from evalgate.ingest.persistence import persist_spans
 
 log = get_logger("evalgate.api.otlp")
 router = APIRouter()
-
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 @router.post("/otel/traces")
@@ -44,7 +42,9 @@ async def ingest_otlp(request: Request, session: SessionDep) -> Response:
             payload = json.loads(body)
             spans, resource_attrs = parse_otlp_json(payload)
             response_ctype = "application/json"
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, json.JSONDecodeError, DecodeError, ParseError) as exc:
+        # protobuf's DecodeError / json_format.ParseError are NOT ValueError
+        # subclasses; without them a malformed body escapes as a 500.
         raise HTTPException(status_code=422, detail=f"unparseable OTLP payload: {exc}") from exc
 
     trace_ids = await persist_spans(session, spans, resource_attrs)

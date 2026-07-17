@@ -34,3 +34,7 @@ class AgentRuntimeResult:
     steps: list[TrajectoryStep]
     llm_calls: list[dict[str, Any]]
     stopped_reason: str | None = None
+    # Summed across every planner LLM call in the loop (0.0/0 when unavailable,
+    # e.g. mock mode or a provider with no published pricing).
+    cost_usd: float = 0.0
+    latency_ms: int = 0
