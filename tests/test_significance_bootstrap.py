@@ -48,6 +48,34 @@ def test_p95_identical_tails_not_significant() -> None:
     assert not result.significant
 
 
+def test_mean_result_is_reliable_by_default() -> None:
+    result = bootstrap_diff_ci([0.8] * 5, [0.6] * 5, seed=0)
+    assert result.reliable is True
+    assert result.n_effective == 5
+
+
+def test_p95_small_sample_is_flagged_unreliable_and_never_significant() -> None:
+    # A big tail jump on a tiny sample: the naive CI would call it significant,
+    # but with too few points to support a p95 the guard refuses to block.
+    base = [100.0] * 8
+    cand = [100.0] * 7 + [9000.0]
+    result = bootstrap_diff_ci(base, cand, statistic="p95", smooth=True, min_reliable_n=20, seed=0)
+    assert result.reliable is False
+    assert result.significant is False
+    assert result.n_effective == 8
+
+
+def test_p95_smoothed_detects_real_tail_regression_with_enough_data() -> None:
+    rng = np.random.default_rng(7)
+    base = rng.normal(1000, 80, 60).tolist()
+    cand = rng.normal(1000, 80, 60).tolist()
+    cand = [x * 1.5 for x in cand]  # 50% slower tail
+    result = bootstrap_diff_ci(base, cand, statistic="p95", smooth=True, min_reliable_n=20, seed=0)
+    assert result.reliable is True
+    assert result.significant is True
+    assert result.direction == "up"
+
+
 def test_unknown_statistic_raises() -> None:
     with pytest.raises(KeyError):
         bootstrap_diff_ci([1.0], [1.0], statistic="median")

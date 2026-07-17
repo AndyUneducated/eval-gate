@@ -181,31 +181,76 @@ def fit_temperature(
 # --------------------------------------------------------------------------- #
 
 
+GLOBAL_SCOPE = "global"
+VALID_SCOPES = (GLOBAL_SCOPE, "task_type", "judge_model")
+
+
 @dataclass
 class Calibrator:
-    """A fitted temperature that maps raw judge scores to calibrated P(good)."""
+    """A fitted temperature (or family of them) mapping raw scores to P(good).
+
+    Phase 16 shipped a single global ``temperature``. Phase 17 generalizes this
+    to *conditional* calibration: a judge is often over-confident on one
+    task_type but well-calibrated on another (likewise across judge models), so
+    one global curve leaves ECE on the table. When ``scope`` is not ``"global"``
+    the calibrator holds a per-group temperature in ``group_temperatures`` and
+    selects it by the row's group key at transform time, falling back to the
+    global ``temperature`` for any group it wasn't fitted on (unseen /
+    data-thin groups). ``scope == "global"`` keeps the exact Phase 16 behavior.
+    """
 
     temperature: float
+    scope: str = GLOBAL_SCOPE
+    group_temperatures: dict[str, float] = field(default_factory=dict)
 
-    def transform(self, score: float) -> float:
-        return _sigmoid(_logit(score) / self.temperature)
+    def temperature_for(self, group: str | None = None) -> float:
+        """The temperature for ``group`` — its own if fitted, else the global."""
+        if group is not None:
+            t = self.group_temperatures.get(group)
+            if t is not None:
+                return t
+        return self.temperature
 
-    def transform_array(self, scores: Sequence[float]) -> np.ndarray:
+    def transform(self, score: float, group: str | None = None) -> float:
+        return _sigmoid(_logit(score) / self.temperature_for(group))
+
+    def transform_array(
+        self, scores: Sequence[float], groups: Sequence[str | None] | None = None
+    ) -> np.ndarray:
         z = _logit_array(np.asarray(scores, dtype=np.float64))
-        t = z / self.temperature
+        if groups is None or not self.group_temperatures:
+            t = z / self.temperature
+        else:
+            temps = np.array([self.temperature_for(g) for g in groups], dtype=np.float64)
+            t = z / temps
         return 0.5 * (1.0 + np.tanh(0.5 * t))
 
-    def uncertainty(self, score: float) -> float:
+    def uncertainty(self, score: float, group: str | None = None) -> float:
         """Active-learning uncertainty: 1 at p=0.5, 0 at p in {0, 1}."""
-        p = self.transform(score)
+        p = self.transform(score, group)
         return 1.0 - abs(2.0 * p - 1.0)
 
-    def to_dict(self) -> dict[str, float]:
-        return {"temperature": self.temperature}
+    def to_dict(self) -> dict:
+        out: dict = {"temperature": self.temperature, "scope": self.scope}
+        if self.group_temperatures:
+            out["group_temperatures"] = dict(self.group_temperatures)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict) -> Calibrator:
-        return cls(temperature=float(data["temperature"]))
+        # Accept both the minimal ``{temperature}`` form and the on-disk params
+        # file, whose ``groups`` map name -> {temperature, n, ece_*}.
+        raw_groups = data.get("group_temperatures") or data.get("groups") or {}
+        group_temperatures: dict[str, float] = {}
+        for name, value in raw_groups.items():
+            group_temperatures[name] = float(
+                value["temperature"] if isinstance(value, dict) else value
+            )
+        return cls(
+            temperature=float(data["temperature"]),
+            scope=str(data.get("scope", GLOBAL_SCOPE)),
+            group_temperatures=group_temperatures,
+        )
 
 
 @dataclass
@@ -227,9 +272,15 @@ def evaluate_calibration(
     calibrator: Calibrator,
     *,
     n_bins: int = DEFAULT_N_BINS,
+    groups: Sequence[str | None] | None = None,
 ) -> CalibrationStats:
-    """Compute ECE/MCE + reliability before and after applying ``calibrator``."""
-    calibrated = calibrator.transform_array(scores)
+    """Compute ECE/MCE + reliability before and after applying ``calibrator``.
+
+    When ``groups`` is given (aligned to ``scores``) each score is calibrated
+    with its group's temperature, so the "after" numbers reflect the conditional
+    fit rather than a single global curve.
+    """
+    calibrated = calibrator.transform_array(scores, groups=groups)
     return CalibrationStats(
         n=len(scores),
         n_bins=n_bins,

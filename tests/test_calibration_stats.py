@@ -92,3 +92,44 @@ def test_calibrator_uncertainty_peaks_at_half() -> None:
 def test_calibrator_dict_round_trip() -> None:
     cal = Calibrator(temperature=2.5)
     assert Calibrator.from_dict(cal.to_dict()).temperature == pytest.approx(2.5)
+
+
+def test_calibrator_group_aware_selects_and_falls_back() -> None:
+    cal = Calibrator(
+        temperature=2.0,
+        scope="task_type",
+        group_temperatures={"rag": 1.5, "agent": 3.0},
+    )
+    # Known group uses its own T; unknown/None falls back to the global 2.0.
+    assert cal.temperature_for("rag") == pytest.approx(1.5)
+    assert cal.temperature_for("agent") == pytest.approx(3.0)
+    assert cal.temperature_for("generic") == pytest.approx(2.0)
+    assert cal.temperature_for(None) == pytest.approx(2.0)
+    # transform honors the group; a higher T pulls P(good) closer to 0.5.
+    assert cal.transform(0.9, "agent") < cal.transform(0.9, "rag")
+
+
+def test_calibrator_grouped_dict_round_trip_and_params_shape() -> None:
+    cal = Calibrator(
+        temperature=2.0, scope="judge_model", group_temperatures={"gpt": 1.2, "claude": 2.8}
+    )
+    back = Calibrator.from_dict(cal.to_dict())
+    assert back.scope == "judge_model"
+    assert back.group_temperatures == pytest.approx({"gpt": 1.2, "claude": 2.8})
+    # Also parse the on-disk params shape (groups -> {temperature, n, ...}).
+    from_params = Calibrator.from_dict(
+        {
+            "temperature": 2.0,
+            "scope": "judge_model",
+            "groups": {"gpt": {"temperature": 1.2, "n": 40}},
+        }
+    )
+    assert from_params.temperature_for("gpt") == pytest.approx(1.2)
+
+
+def test_transform_array_grouped_matches_scalar() -> None:
+    cal = Calibrator(temperature=2.0, scope="task_type", group_temperatures={"rag": 1.4})
+    scores = [0.8, 0.8]
+    out = cal.transform_array(scores, groups=["rag", "generic"])
+    assert out[0] == pytest.approx(cal.transform(0.8, "rag"))
+    assert out[1] == pytest.approx(cal.transform(0.8, "generic"))

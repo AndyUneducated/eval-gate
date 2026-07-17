@@ -11,7 +11,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from evalgate.badcase import finder as badcase_finder
-from evalgate.db.models import EvalResultRow, EvalRunRow, EvalSetRow
+from evalgate.db.models import EvalCaseRow, EvalResultRow, EvalRunRow, EvalSetRow
 from evalgate.report.calibration import Calibrator
 
 
@@ -91,3 +91,53 @@ async def test_no_calibrator_keeps_raw_behavior(db_session_factory):
     # Lowest judge_confidence first, reason references judge_confidence.
     assert items[0].judge_confidence == 0.1
     assert "judge_confidence" in items[0].reason
+
+
+async def _seed_grouped(factory, rows: list[tuple[str, float]]) -> str:
+    """rows = list of (task_type, score); each gets its own eval_case."""
+    async with factory() as session:
+        s = EvalSetRow(id=_id(), name="bc-grp")
+        session.add(s)
+        await session.commit()
+        run = EvalRunRow(
+            id=_id(),
+            eval_set_id=s.id,
+            prompt_path="p",
+            prompt_hash="h" * 64,
+            candidate_model="m",
+            judge_model="j",
+        )
+        session.add(run)
+        await session.commit()
+        for task_type, score in rows:
+            cid = _id()
+            session.add(EvalCaseRow(id=cid, task_type=task_type, input={}, tags=[]))
+            session.add(
+                EvalResultRow(
+                    id=_id(),
+                    eval_run_id=run.id,
+                    eval_case_id=cid,
+                    tags=[task_type],
+                    output={"text": "o"},
+                    score=score,
+                    cost_usd=0.0,
+                    latency_ms=1,
+                )
+            )
+        await session.commit()
+        return run.id
+
+
+async def test_grouped_calibrator_ranks_by_per_group_curve(db_session_factory):
+    # Same raw score, different task_type curves: the high-T "agent" curve pulls
+    # P(good) toward 0.5 (max uncertainty), so it must rank ahead of "rag".
+    run_id = await _seed_grouped(db_session_factory, [("rag", 0.8), ("agent", 0.8)])
+    cal = Calibrator(
+        temperature=1.0, scope="task_type", group_temperatures={"rag": 1.0, "agent": 10.0}
+    )
+    async with db_session_factory() as session:
+        items = await badcase_finder.find_uncertainty(
+            session, run_id=run_id, limit=2, calibrator=cal
+        )
+    assert items[0].reason.endswith("[task_type=agent]")
+    assert items[1].reason.endswith("[task_type=rag]")

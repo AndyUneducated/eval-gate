@@ -27,6 +27,12 @@ Aggregator = Literal["mean", "p95"]
 # before it fails the gate.
 LATENCY_REL_TOLERANCE = 0.10
 
+# Phase 17: a p95 bootstrap only becomes trustworthy once the tail has enough
+# support. Below this per-side sample count the latency axis is flagged
+# unreliable and can't fail the gate (see report/significance.py). ~20 rows puts
+# 1 observation past the 95th percentile, the minimum for a non-degenerate tail.
+P95_MIN_RELIABLE_N = 20
+
 
 @dataclass(frozen=True)
 class AxisSpec:
@@ -137,7 +143,16 @@ def build_axis_metrics(
             c_agg = _aggregate(spec, c_vals)
             delta = c_agg - b_agg
             if b_vals and c_vals:
-                boot = bootstrap_diff_ci(b_vals, c_vals, statistic=spec.aggregator)
+                # Tail quantiles get the smoothed + sample-size-guarded bootstrap
+                # (Phase 17); mean axes keep the plain nonparametric one.
+                is_tail = spec.aggregator == "p95"
+                boot = bootstrap_diff_ci(
+                    b_vals,
+                    c_vals,
+                    statistic=spec.aggregator,
+                    smooth=is_tail,
+                    min_reliable_n=P95_MIN_RELIABLE_N if is_tail else 1,
+                )
                 ci_low = boot.ci_low
                 ci_high = boot.ci_high
                 significant = boot.significant

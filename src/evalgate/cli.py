@@ -87,6 +87,8 @@ from evalgate.db.session import SessionLocal
 from evalgate.eval_set import repository
 from evalgate.evaluator import runner as eval_runner
 from evalgate.gate.decision import build_gate_report
+from evalgate.report import agreement as agreement_engine
+from evalgate.report import calibration as calibration_cal
 from evalgate.report import sequential as seq_engine
 from evalgate.shadow import rollup as shadow_rollup
 
@@ -761,7 +763,9 @@ def _cmd_calibration_fit(args: argparse.Namespace) -> int:
     out = args.out or get_settings().calibration_params_path
 
     async def body(session: AsyncSession):
-        return await calibration_repo.fit_and_save(session, params_path=out, run_id=args.run)
+        return await calibration_repo.fit_and_save(
+            session, params_path=out, run_id=args.run, scope=args.scope
+        )
 
     try:
         report = asyncio.run(_with_session(body))
@@ -771,12 +775,17 @@ def _cmd_calibration_fit(args: argparse.Namespace) -> int:
     _print(
         {
             "params_path": out,
+            "scope": report.scope,
             "n": report.n,
             "temperature": report.temperature,
             "ece_before": report.ece_before,
             "ece_after": report.ece_after,
             "mce_before": report.mce_before,
             "mce_after": report.mce_after,
+            "groups": {
+                name: {"temperature": g.temperature, "n": g.n, "ece_after": g.ece_after}
+                for name, g in report.groups.items()
+            },
         }
     )
     return 0
@@ -788,7 +797,7 @@ def _cmd_calibration_report(args: argparse.Namespace) -> int:
 
     async def body(session: AsyncSession):
         return await calibration_repo.compute_report(
-            session, calibrator=calibrator, run_id=args.run
+            session, calibrator=calibrator, run_id=args.run, scope=args.scope
         )
 
     try:
@@ -807,10 +816,23 @@ def _cmd_calibration_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_calibration_kappa(args: argparse.Namespace) -> int:
+    async def body(session: AsyncSession):
+        report = await calibration_repo.compute_agreement(
+            session, run_id=args.run, threshold=args.threshold, scope=args.scope
+        )
+        return report.model_dump()
+
+    return run_db_command(body)
+
+
 def _add_calibration_subcommands(parent: argparse._SubParsersAction) -> None:
     calibration = parent.add_parser(
         "calibration",
-        help="Calibrate judge scores against human labels (ECE + temperature scaling, Phase 16).",
+        help=(
+            "Judge-vs-human label tools: temperature-scaling calibration (Phase 16) "
+            "+ Cohen's kappa agreement (Phase 17)."
+        ),
     )
     sub = calibration.add_subparsers(dest="calibration_cmd", required=True)
 
@@ -836,6 +858,12 @@ def _add_calibration_subcommands(parent: argparse._SubParsersAction) -> None:
         default=None,
         help="params path (default: settings.calibration_params_path).",
     )
+    fit.add_argument(
+        "--scope",
+        default=calibration_cal.GLOBAL_SCOPE,
+        choices=list(calibration_cal.VALID_SCOPES),
+        help="fit one global curve or a conditional curve per task_type / judge_model.",
+    )
     fit.set_defaults(func=_cmd_calibration_fit)
 
     report = sub.add_parser(
@@ -853,7 +881,32 @@ def _add_calibration_subcommands(parent: argparse._SubParsersAction) -> None:
         default=None,
         help="write a reliability diagram PNG to this path (needs matplotlib).",
     )
+    report.add_argument(
+        "--scope",
+        default=calibration_cal.GLOBAL_SCOPE,
+        choices=list(calibration_cal.VALID_SCOPES),
+        help="scope for an ephemeral fit when no params file is loaded.",
+    )
     report.set_defaults(func=_cmd_calibration_report)
+
+    kappa = sub.add_parser(
+        "kappa",
+        help="Cohen's kappa: judge verdict vs human labels agreement (Phase 17).",
+    )
+    kappa.add_argument("--run", default=None, help="restrict to one eval_run (default: all).")
+    kappa.add_argument(
+        "--threshold",
+        type=float,
+        default=agreement_engine.DEFAULT_THRESHOLD,
+        help="score >= threshold counts as a 'good' judge verdict (default 0.5).",
+    )
+    kappa.add_argument(
+        "--scope",
+        default=calibration_cal.GLOBAL_SCOPE,
+        choices=list(calibration_cal.VALID_SCOPES),
+        help="also break kappa down per task_type / judge_model.",
+    )
+    kappa.set_defaults(func=_cmd_calibration_kappa)
 
 
 def _add_eval_set_subcommands(parent: argparse._SubParsersAction) -> None:

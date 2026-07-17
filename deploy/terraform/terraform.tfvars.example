@@ -1,0 +1,22 @@
+aws_region  = "us-east-1"
+project     = "evalgate"
+environment = "demo"
+
+# After the first image push you can pin an immutable tag instead of :latest:
+# container_image = "<acct>.dkr.ecr.us-east-1.amazonaws.com/evalgate-demo:<git-sha>"
+
+# Lock down who can reach the ALB (default is the whole internet).
+# alb_ingress_cidrs = ["203.0.113.4/32"]
+
+# Sizing.
+# api_cpu       = 512
+# api_memory    = 1024
+# desired_count = 1
+
+# Optional judge-provider keys (stored in Secrets Manager, injected as env).
+# openai_api_key    = "sk-..."
+# anthropic_api_key = "sk-ant-..."
+
+# Enable ONCE per account to let GitHub Actions deploy via OIDC:
+# create_github_oidc = true
+# github_repository  = "AndyUneducated/eval-gate"

@@ -120,7 +120,7 @@ graph TB
 | Agent 评测 | **Trajectory eval（tool-call accuracy + step-wise success）** | Agent 输出是动作序列不是文本，单测最终答案会漏掉中间错误；step-wise eval 是 OpenAI/Anthropic Agent Eval 论文标准做法 |
 | BadCase Finder | **uncertainty sampling（主动学习，按 Judge confidence 排序）+ 启发式 outlier（latency / cost / 用户负反馈）+ LLM 辅助打标** | 三层过滤防 eval set 数据爆炸 + 类别失衡：uncertainty sampling 优先选 LLM Judge 不确定的样本（信息量最大），启发式抓硬故障，LLM 抓 subtle 质量问题 |
 | CI 集成 | **GitHub Actions workflow + REST API** | PR 触发是业界标准；REST API 让 GitLab / Buildkite / Jenkins 都能接 |
-| 部署 | **Docker Compose（demo）/ AWS ECS + RDS（生产 demo）** | 学 Cloud（简历缺失项），用 ECS 比 EKS 简单 |
+| 部署 | **Docker Compose（demo）/ AWS ECS Fargate + RDS（生产 demo，Terraform + GitHub OIDC）** | 学 Cloud（简历缺失项），用 ECS 比 EKS 简单——Phase 18 已落地，见 [PHASE_18_PLAN.md](./PHASE_18_PLAN.md) 与 ADR-017 |
 
 ### 2.3 关键技术决策（trade-off）
 

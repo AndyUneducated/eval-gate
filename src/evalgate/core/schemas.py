@@ -414,12 +414,29 @@ class ReliabilityBin(BaseModel):
     mean_accuracy: float
 
 
-class CalibrationReport(BaseModel):
-    """Before/after calibration summary (Phase 16).
+class CalibrationGroup(BaseModel):
+    """One conditional calibration curve (Phase 17).
 
-    ``temperature`` is the fitted scaling (>1 = judge was overconfident). The
-    ``ece_*`` / ``mce_*`` pairs and the reliability curves quantify the
-    improvement; ``calibrate score -> sigmoid(logit(score)/T)``.
+    When calibration is fit ``per task_type`` or ``per judge_model``, each group
+    with enough labeled data gets its own fitted ``temperature`` plus the ECE it
+    achieves on that slice. Data-thin groups are omitted and fall back to the
+    report's global ``temperature`` at read time.
+    """
+
+    temperature: float
+    n: int
+    ece_before: float
+    ece_after: float
+
+
+class CalibrationReport(BaseModel):
+    """Before/after calibration summary (Phase 16; conditional in Phase 17).
+
+    ``temperature`` is the fitted global scaling (>1 = judge was overconfident)
+    and the read-time fallback. The ``ece_*`` / ``mce_*`` pairs and the
+    reliability curves quantify the improvement; ``calibrate score ->
+    sigmoid(logit(score)/T)``. When ``scope`` is not ``"global"`` the ``groups``
+    map carries one conditional curve per fitted task_type / judge_model.
     """
 
     n: int
@@ -429,5 +446,43 @@ class CalibrationReport(BaseModel):
     ece_after: float
     mce_before: float
     mce_after: float
+    scope: str = "global"
+    groups: dict[str, CalibrationGroup] = Field(default_factory=dict)
     reliability_before: list[ReliabilityBin] = Field(default_factory=list)
     reliability_after: list[ReliabilityBin] = Field(default_factory=list)
+
+
+class AgreementGroup(BaseModel):
+    """Judge-vs-human agreement on one task_type / judge_model slice (Phase 17)."""
+
+    n: int
+    cohen_kappa: float
+    observed_agreement: float
+    ci_low: float
+    ci_high: float
+
+
+class AgreementReport(BaseModel):
+    """Cohen's kappa between the judge's binary verdict and human labels (Phase 17).
+
+    The judge ``score`` is thresholded at ``threshold`` into good/bad and matched
+    against the ``human_labels`` verdict. ``cohen_kappa`` corrects observed
+    agreement for chance; ``ci_low`` / ``ci_high`` are a bootstrap CI. When
+    ``scope`` is not ``"global"`` the ``groups`` map carries per-slice kappa.
+    """
+
+    n: int
+    threshold: float
+    cohen_kappa: float
+    observed_agreement: float
+    expected_agreement: float
+    ci_low: float
+    ci_high: float
+    judge_positive_rate: float
+    human_positive_rate: float
+    tp: int
+    fp: int
+    fn: int
+    tn: int
+    scope: str = "global"
+    groups: dict[str, AgreementGroup] = Field(default_factory=dict)

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from evalgate import cli
-from evalgate.db.models import EvalResultRow, EvalRunRow, EvalSetRow
+from evalgate.db.models import EvalCaseRow, EvalResultRow, EvalRunRow, EvalSetRow
 
 
 def _id() -> str:
@@ -98,6 +98,67 @@ def test_label_fit_report_flow(patched_session, tmp_path, capsys):
     assert report["plot"] == str(png)
     assert png.exists() and png.stat().st_size > 0
     assert set(report) >= {"temperature", "ece_before", "ece_after", "reliability_after"}
+
+
+async def _seed_task_types(factory, spec: dict[str, tuple[list[float], list[int]]]):
+    labels_by_id: dict[str, int] = {}
+    async with factory() as session:
+        s = EvalSetRow(id=_id(), name="cal")
+        session.add(s)
+        await session.commit()
+        run = EvalRunRow(
+            id=_id(),
+            eval_set_id=s.id,
+            prompt_path="p",
+            prompt_hash="h" * 64,
+            candidate_model="m",
+            judge_model="j",
+        )
+        session.add(run)
+        await session.commit()
+        for task_type, (scores, labels) in spec.items():
+            for sc, y in zip(scores, labels, strict=True):
+                cid = _id()
+                session.add(EvalCaseRow(id=cid, task_type=task_type, input={}, tags=[]))
+                rid = _id()
+                session.add(
+                    EvalResultRow(
+                        id=rid,
+                        eval_run_id=run.id,
+                        eval_case_id=cid,
+                        tags=[],
+                        output={"text": "o"},
+                        score=sc,
+                        cost_usd=0.0,
+                        latency_ms=1,
+                    )
+                )
+                labels_by_id[rid] = int(y)
+        await session.commit()
+    return labels_by_id
+
+
+def test_fit_scope_task_type_reports_groups(patched_session, tmp_path, capsys):
+    spec = {
+        "rag": _overconfident(60, seed=21),
+        "agent": _overconfident(60, seed=22),
+    }
+    labels_by_id = asyncio.run(_seed_task_types(patched_session, spec))
+    capsys.readouterr()
+    for rid, y in labels_by_id.items():
+        cli.main(["calibration", "label", "--result", rid, "--label", "good" if y else "bad"])
+    capsys.readouterr()
+
+    params = tmp_path / "params.json"
+    rc = cli.main(["calibration", "fit", "--out", str(params), "--scope", "task_type"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["scope"] == "task_type"
+    assert set(out["groups"]) == {"rag", "agent"}
+
+    saved = json.loads(params.read_text())
+    assert saved["scope"] == "task_type"
+    assert set(saved["groups"]) == {"rag", "agent"}
 
 
 def test_label_unknown_result_returns_error(patched_session, capsys):

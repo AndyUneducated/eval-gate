@@ -54,3 +54,17 @@ gate-report.json
 # Smoke-script scratch (defensive: smokes now write to the system temp dir)
 .phase*-runs/
 .phase*.db
+
+# Terraform (deploy/terraform) — never commit provider binaries, state, or vars
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

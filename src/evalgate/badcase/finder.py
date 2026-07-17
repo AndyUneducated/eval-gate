@@ -135,12 +135,22 @@ async def find_uncertainty(
         # calibrated P(good) to 0.5 (the decision boundary). This is the
         # principled active-learning signal once the score is a real
         # probability, and it works at read time off the immutable raw score.
-        rows.sort(key=lambda r: -calibrator.uncertainty(float(r.score)))
+        # Phase 17: when the calibrator is conditional (per task_type / judge),
+        # resolve each row's group so it's ranked with the right curve.
+        group_of: dict[str, str] = {}
+        if calibrator.scope != "global":
+            from evalgate.calibration.repository import group_keys_for_rows
+
+            group_of = await group_keys_for_rows(session, rows, scope=calibrator.scope)
+        rows.sort(key=lambda r: -calibrator.uncertainty(float(r.score), group_of.get(r.id)))
         out: list[BadCase] = []
         for r in rows[:limit]:
-            p = calibrator.transform(float(r.score))
+            g = group_of.get(r.id)
+            p = calibrator.transform(float(r.score), g)
             u = 1.0 - abs(2.0 * p - 1.0)
             reason = f"calibrated_uncertainty={u:.3f} (p_good={p:.3f})"
+            if g is not None:
+                reason += f" [{calibrator.scope}={g}]"
             out.append(_to_badcase(r, strategy="uncertainty", reason=reason))
         return out
 

@@ -75,7 +75,7 @@ flowchart LR
 | 标签存哪 | **新 DB 表 `human_labels`**（软引用 `eval_result_id`，无 FK） | JSON 文件 | DB 表能 join `eval_results`、按 run 过滤、可查询，与既有持久化范式一致；更关键它**同时是后续 Cohen's kappa（judge vs 人工一致性）的数据源**——一张表喂两个 phase。软引用让标签在结果删除后存活。 |
 | 校准在何处施加 | **读取时（read-time）由纯 `Calibrator`** | eval 时持久化 calibrated score | 延续"存原始、读时变换"的原则：原始分数不可变、校准曲线随时可重拟合 / 替换而无需重跑 judge；runner 零改动；不引入"哪个是原始分、哪个是校准分"的列歧义。 |
 
-**已知代价**：单调变换不重排原始分数（见上），badcase 召回对比因此是"校准后不确定度 vs 启发式 confidence"而非"重排分数"；当前是**单一全局 T**（params JSON 形状已为 per-task-type / per-judge 多曲线预留扩展空间，但未实现）；新增 matplotlib 依赖（仅出 reliability diagram，Agg 懒加载，纯统计路径不触发）。
+**已知代价**：单调变换不重排原始分数（见上），badcase 召回对比因此是"校准后不确定度 vs 启发式 confidence"而非"重排分数"；当前是**单一全局 T**（params JSON 形状已为 per-task-type / per-judge 多曲线预留扩展空间——**Phase 17 已落实**，见 [PHASE_17_PLAN.md](./PHASE_17_PLAN.md) 与 ADR-016）；新增 matplotlib 依赖（仅出 reliability diagram，Agg 懒加载，纯统计路径不触发）。
 
 ## 模块布局（沿用 `report/` = 纯统计、子包 = 编排 的分层）
 

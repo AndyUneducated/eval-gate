@@ -26,6 +26,10 @@
 | **ADR-011** | Case status/source 生命周期 + reference-free 对抗出题 | accepted（Phase 14） | pending 永不入 gate 只靠 `list_cases` 默认 active-only；hit=绝对阈值；红队 case 无 gold |
 | **ADR-012** | Sequential gate：paired 序贯检验 + α-spending / curtailment、仅 quality | accepted（Phase 15） | early-FAIL 用 Lan-DeMets α-spending、early-PASS 用 stochastic curtailment；只对 quality 序贯、其余固定-N 快照；sequential 判定权威 |
 | **ADR-013** | Judge Calibration：校准 score（非 confidence）+ DB 人标表 + 读时 Calibrator | accepted（Phase 16） | 用 temperature scaling 把 `score` 变真概率；人标存 `human_labels` 表（P17 κ 复用）；读时变换保持 `eval_results` 不可变 |
+| **ADR-014** | Cohen's κ 复用 `human_labels` + 阈值化判定 | accepted（Phase 17） | κ 扣掉"碰巧一致"度量 judge vs 人工；`score ≥ 0.5` 二值化；零新表/migration |
+| **ADR-015** | p95 显著性：平滑 + 样本量守卫 bootstrap（还 ADR-004 债） | accepted（Phase 17） | Silverman 平滑修尾分位离散、`min_reliable_n` 守卫防小样本 false-block |
+| **ADR-016** | 条件校准：per-`task_type` / per-`judge_model` 温度 + 读时分组选 T | accepted（Phase 17，落实 ADR-013 预留） | 全局 T 兜底 + 分组各拟合；薄分组回落全局；`eval_results` 不加列 |
+| **ADR-017** | 云部署：ECS Fargate + RDS，Terraform 起栈，GitHub OIDC 发布 | accepted（Phase 18） | 无服务器容器省运维、比 EKS 简单；单 public-subnet 省 NAT（demo 取舍）；OIDC 免长期密钥；镜像多阶段非 root |
 
 > 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
 
@@ -328,3 +332,104 @@
 - 当前是**单一全局 T**；params JSON 形状预留了 per-task-type / per-judge 多曲线的扩展空间，但未实现。
 - 新增 matplotlib 依赖（仅 reliability diagram，Agg 懒加载，纯统计路径不触发）。
 - mock judge 恒返 0.5（零信息）使校准 demo 跑不了：phase16 smoke 改走**离线合成**过自信对——与 Phase 14/15 同款诚实取舍。
+
+---
+
+## ADR-014 · Cohen's κ（judge vs 人工一致性）复用 `human_labels` + 阈值化判定
+
+**Date**: 2026-07-16 · **Status**: accepted（Phase 17）
+
+**Context**：设计文档的头号 talking point 之一是"judge κ vs 人工 ~0.85，逼近 double-human 上限"。要把它变成能跑出来的数，需要一个 judge 二元判定 vs 人工二元标签的一致性度量。三个岔路：(1) 用什么度量——原始准确率还是 κ？(2) 标签从哪来——新存储还是复用？(3) judge 的"判定"怎么从连续 `score` 得到？
+
+**Decision**：
+- **用 Cohen's κ**：`κ = (p_o − p_e)/(1 − p_e)`，2×2 闭式 + bootstrap CI（重采样配对 1000 次），只依赖 numpy（无 sklearn），放纯引擎 [report/agreement.py](src/evalgate/report/agreement.py)。
+- **复用 `human_labels` 表**：直接 `fetch_scored_labels` 拿 `(score, label)`，零新表、零 migration。
+- **judge 判定 = `score ≥ threshold`**（默认 0.5，`--threshold` 可调）。
+- 可选 `--scope task_type|judge_model` 复用条件分组（ADR-016）出 per-slice κ。
+
+**Rationale**：
+1. **κ 扣掉"碰巧一致"**：judge/人工都倾向说 good 时，raw accuracy 会被多数类灌水；κ 才诚实地回答"judge 能不能替代人工"。这也正是文献里报 double-human κ ~0.85-0.90 的那把尺。
+2. **一表喂两 phase 是 ADR-013 早定的**：`human_labels` 当初就是为"校准 + κ"两用设计的（软引用、可 join、可按 run 过滤），此处兑现，不再造第二套标注存储。
+3. **判定阈值 = gate 通过语义**：gate 本就以"分数过线"定义通过，κ 用同一根线最自洽；阈值可调以适配不同任务的"好"标准。
+
+**Consequences**：
+- κ 依赖决策阈值选取（默认 0.5 与 gate 语义一致，但非普适最优）。
+- mock judge 恒返 0.5（零信息）使 κ demo 跑不了：phase17 smoke 走**离线合成**（seeded、noisy human）——与 Phase 14/15/16 同款诚实取舍。
+- 退化标注（单类）时 κ 无定义，按惯例完全一致返 1 / 否则返 0（已单测覆盖）。
+
+---
+
+## ADR-015 · p95 显著性复盘：平滑 + 样本量守卫 bootstrap（还 ADR-004 的债）
+
+**Date**: 2026-07-16 · **Status**: accepted（Phase 17）
+
+**Context**：ADR-004 里 p95 轴"v1 先用阈值（重采样的 p95 解释比较微妙，留待 Phase 17 复盘）"、"p95 显著性留了技术债"。技术上，高分位的裸非参 bootstrap 只反复洗那 1–2 个尾部次序统计量 → CI 离散、覆盖率偏低，小样本尤甚。
+
+**Decision**：在 [report/significance.py](src/evalgate/report/significance.py) 给 `bootstrap_diff_ci` 加两个开关，`latency_p95` 轴启用：
+- **平滑 bootstrap（`smooth=True`）**：每次重采样叠 `N(0, h²)` 核噪声，带宽 Silverman `h = 0.9·σ·n^(−1/5)`，把离散经验 CDF 抹连续。
+- **可靠性守卫（`min_reliable_n`，gate 用 20）**：小于阈值标 `reliable=False` 且强制 `significant=False`——薄尾轴**永不 false-block**。
+- `BootstrapResult` 加 `reliable` / `n_effective`；mean 轴默认不变（`smooth=False, min_reliable_n=1`）。10% 相对容差带保留作 belt-and-suspenders。
+
+**Rationale**：
+1. **平滑修分位、守卫修小样本**，正是文献对"分位 bootstrap 不稳"的两条标准修法组合；比 studentized bootstrap 简单（不用估方差的方差）。
+2. **守卫直接对齐 ADR-004 的初心**：CI gate 存在的意义之一就是"不误 block"，一条尾部数据太薄的轴宁可放行也不冤枉 PR。
+3. **默认不变 = 零回归**：mean 轴（quality/cost）行为逐字节保持，改动被 spec 局限在 p95 轴。
+
+**Consequences**：
+- 平滑带宽是经验法则、并让 CI 偏宽（偏保守）——但保守正是 gate 想要的方向。
+- 小于 20 条 per-side 的 eval set 上 latency 轴不再可能判显著（会被 `reliable=False` 挡下）；这是有意的"数据不足不下结论"。
+- ADR-004 的 p95 债由此关闭。
+
+---
+
+## ADR-016 · 条件校准：per-`task_type` / per-`judge_model` 温度 + 读时分组选 T
+
+**Date**: 2026-07-16 · **Status**: accepted（Phase 17，落实 ADR-013 预留的扩展位）
+
+**Context**：ADR-013 落地了**单一全局 T**，并明说"params JSON 形状预留了 per-task-type / per-judge 多曲线的扩展空间，但未实现"。而 judge 常在一类任务过自信、另一类却校准良好，单一 T 会在分组间留 ECE。
+
+**Decision**：
+- `Calibrator` 泛化成带 `scope` + `group_temperatures` 的温度族：`transform(score, group)` 按分组选 T，未见/薄分组回落全局 T；`scope="global"` 逐字节等同 Phase 16。
+- 拟合先在全体拟合全局 T（兜底），再对每个数据充足（沿用 `n ≥ 10` + 双类）的分组各拟合一条；薄分组不给独立曲线。
+- **分组信息读时 join**：`task_type ← eval_cases`、`judge_model ← eval_runs`；`eval_results` 不加列。
+- `fit --scope` / `report --scope` / `badcase` 透传；params JSON 加 `scope` + `groups`（空即等价旧文件）。
+
+**Rationale**：
+1. **异质性主要来自 task_type 与 judge_model**，也是标注量能撑住的粒度；(task×judge) 笛卡尔积会把每格摊薄到拟合不动，故只做两条独立轴 + 全局兜底。
+2. **延续"存原始、读时变换"（ADR-012/013）**：不加结果列，曲线随时可换 scope 重拟合，runner 零改动。
+3. **严格向后兼容**：旧的全局 params 文件、旧的 `Calibrator(temperature=T)` 调用、badcase 全局路径全部不变——新行为纯 opt-in。
+
+**Consequences**：
+- badcase 读时多一两条 `IN (...)` 查询以取分组键（相对 judge 调用可忽略）。
+- 标注稀疏时多数分组回落全局 T，此时等价 Phase 16（诚实的降级，不是 bug）。
+- params JSON 形状变了（加 `scope`/`groups`），但 `Calibrator.from_dict` 同时吃新旧两种形状。
+
+---
+
+## ADR-017 · 云部署：ECS Fargate + RDS，Terraform 起栈，GitHub OIDC 发布
+
+**Date**: 2026-07-16 · **Status**: accepted（Phase 18）
+
+**Context**：设计文档一直把部署写成"Docker Compose（demo）/ AWS ECS + RDS（生产 demo）"，但只落地了 Compose。云那半是简历的明确缺失项（"学 Cloud"），需要把它变成**可 `terraform apply` 起来、可 CI 一键发布**的真栈。几个岔路：容器编排选什么（ECS vs EKS vs 裸 EC2）、网络怎么布（省钱 vs 教科书私网）、镜像怎么发（长期密钥 vs OIDC）、迁移在哪跑（服务启动时 vs 一次性任务）。
+
+**Decision**：
+- **编排 = ECS Fargate**（无服务器容器），栈由 **Terraform** 起：VPC + 2 AZ public subnet、ALB（`/healthz` 健康检查）、ECS 服务/任务定义、RDS Postgres 16、Secrets Manager、IAM。见 [deploy/terraform/](deploy/terraform/)。
+- **网络走单层 public subnet**：Fargate 任务带公网 IP（SG 只放行 ALB），RDS `publicly_accessible=false` + SG 只放行 app——**刻意不建 NAT gateway**（省 ~$32/mo）。
+- **镜像多阶段 + 非 root + HEALTHCHECK**：builder 装依赖、runtime 只搬 venv/源码，`appuser`(uid 10001) 运行，`docker-entrypoint.sh` 分 `serve`/`migrate` 两命令。
+- **发布走 GitHub OIDC**：`.github/workflows/deploy.yml` 用 OIDC 假借 IAM role（零长期 AK/SK），build→push ECR→`update-service --force-new-deployment`。OIDC provider/role 由 `create_github_oidc` 开关在 Terraform 里可选建。
+- **迁移默认随服务任务启动**（`RUN_MIGRATIONS=true`，`desired_count=1` 无竞态）；`desired_count>1` 时改用一次性 `migrate` ECS 任务（`deploy/scripts/run_migrations.sh`）。
+- **secret 注入**：DATABASE_URL 由 RDS endpoint + 随机口令在 Terraform 内组装、存 Secrets Manager，ECS 以 `secrets` 注入——明文 DSN 不落任务定义/state 输出；judge provider key 只在提供时才建 secret。
+
+**Rationale**：
+1. **Fargate 比 EKS 简单一个数量级**：无 node/控制面运维，按任务计费，恰好匹配"单服务 demo + 简历讲得清"的目标；ECS 也是 AWS 一等公民（对齐 ADR-002 选 RDS 的同款"托管优先"思路）。
+2. **省 NAT 是清醒的 demo 取舍**：教科书做法是 app/RDS 进私网 + NAT 出网，但 NAT 常驻计费且对单服务 demo 无实质安全增益（SG 已把入站锁到 ALB/app）；README 明写生产应切私网 + NAT 或 VPC endpoint。
+3. **OIDC 是 2024 年后 CI→云的标准姿势**：仓库里不存任何长期 AWS 密钥，role 的 trust policy 用 `sub = repo:owner/repo:*` 限定，权限窄到只够 ECR push + ECS 发布 + PassRole。
+4. **多阶段非 root 镜像**是容器安全基线；`/healthz`（已存在）同时喂容器 HEALTHCHECK、ALB target group、ECS container healthCheck 三处，一个探针三处复用。
+5. **迁移随任务启动**让"apply 完即可用"（单任务无竞态），多任务再用一次性任务——两条路都留，按 `desired_count` 选。
+
+**Consequences**：
+- 生产镜像仍带 streamlit/matplotlib/ragas/presidio 等 API 运行期用不到的重依赖（沿用现有单一依赖集，未拆 extras）——镜像偏大，列为已知代价 / 后续可拆 optional-deps 瘦身。
+- public-subnet 省钱布局不是生产终局；已在 README/ADR 标注切私网 + NAT 的升级路径。
+- ALB 目前只有 `:80`（HTTP）；TLS 需 ACM 证书 + 域名，留作下一步（变量位已预留思路）。
+- Terraform state 默认本地；README 给了切 S3 + DynamoDB lock 的 backend 注释，真用要先配远端 state。
+- 未在真实 AWS 账号 apply（本轮无云凭证、避免起费用）；离线验证到 `terraform validate` 通过 + `fmt` 干净 + 镜像/compose/脚本语法校验，真 apply 时才会产生费用。

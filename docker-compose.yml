@@ -27,6 +27,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://evalgate:evalgate@db:5432/evalgate
       LOG_LEVEL: INFO
       ENV: docker
+      # Dev convenience: the container applies migrations on start (single task,
+      # no race). Prod runs the one-off `migrate` task instead — see deploy/.
+      RUN_MIGRATIONS: "true"
     ports:
       - "8000:8000"
 

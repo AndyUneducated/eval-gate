@@ -1,4 +1,7 @@
-.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke adversarial-smoke sequential-smoke calibration-smoke clean
+.PHONY: help install dev test lint format db-up db-down demo-trace ui ci-gate ci-gate-real shadow-smoke adversarial-smoke sequential-smoke calibration-smoke kappa-smoke docker-build tf-init tf-plan tf-apply tf-destroy deploy deploy-migrate clean
+
+TF_DIR ?= deploy/terraform
+IMAGE ?= evalgate:local
 
 help:  ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make \033[36m<target>\033[0m\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -65,10 +68,34 @@ sequential-smoke:  ## Phase 15 sequential gate (offline synthetic: early FAIL + 
 calibration-smoke:  ## Phase 16 judge calibration (offline synthetic: ECE drop + temperature)
 	PYTHONPATH='src:.' uv run python scripts/phase16_calibration_smoke.py
 
+kappa-smoke:  ## Phase 17 (offline synthetic: Cohen's kappa + guarded p95 + conditional calibration)
+	PYTHONPATH='src:.' uv run python scripts/phase17_kappa_smoke.py
+
 ui:  ## Start the streamlit ops UI on http://127.0.0.1:8501 (talks to evalgate-api over HTTP)
 	uv run streamlit run src/evalgate/ui/Home.py \
 		--server.port 8501 \
 		--server.address 127.0.0.1
+
+docker-build:  ## Build the production API image locally
+	docker build -t $(IMAGE) .
+
+tf-init:  ## terraform init (AWS ECS + RDS stack)
+	terraform -chdir=$(TF_DIR) init
+
+tf-plan:  ## terraform plan
+	terraform -chdir=$(TF_DIR) plan
+
+tf-apply:  ## terraform apply — provisions VPC + RDS + ECS Fargate + ALB
+	terraform -chdir=$(TF_DIR) apply
+
+tf-destroy:  ## Tear down all cloud resources
+	terraform -chdir=$(TF_DIR) destroy
+
+deploy:  ## Build+push image to ECR and roll the ECS service (needs applied TF + aws/docker)
+	./deploy/scripts/deploy.sh
+
+deploy-migrate:  ## Run the one-off DB migration task on ECS (for desired_count > 1)
+	./deploy/scripts/run_migrations.sh
 
 clean:  ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache dist build *.egg-info

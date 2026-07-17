@@ -89,6 +89,7 @@ flowchart TB
         AD["Adversarial Synth<br/>红队自动出题飞轮"]
         SQ["Sequential Gate<br/>序贯检验省调用"]
         CA["Judge Calibration<br/>ECE + 温度缩放"]
+        KA["Judge Agreement<br/>Cohen's κ vs 人工"]
     end
     core --> hl
 ```
@@ -105,7 +106,8 @@ flowchart TB
 | **Shadow Mode** | candidate 在生产流量上被无害评测，抓 PR 集覆盖不到的盲点 | fire-and-forget 异步 · SDK 侧打分 · on-demand rollup |
 | **Adversarial Synth** | 对最弱 tag 自动出"刁钻题"，人审后入集，形成闭环飞轮 | red-teaming · reference-free 出题 · case 生命周期状态机 |
 | **Sequential Gate** | 边跑边判、证据够就提前停，省一半 judge 调用 | 序贯检验 · α-spending · stochastic curtailment（随机截断） |
-| **Judge Calibration** | 让 judge 说的 0.8 真约等于 80% 通过率 | ECE（期望校准误差）· temperature scaling（温度缩放）· reliability diagram |
+| **Judge Calibration** | 让 judge 说的 0.8 真约等于 80% 通过率（支持按 task_type / judge 分组条件校准） | ECE（期望校准误差）· temperature scaling（温度缩放）· reliability diagram · 条件曲线 |
+| **Judge Agreement** | Cohen's κ 量化 judge 判定 vs 人工标签一致性（对齐 double-human 上限） | Cohen's κ · bootstrap CI · 阈值化判定 · 按分组 κ |
 
 > 每个能力的完整技术方案 + 选型抉择见 [`docs/`](docs/) 下对应的 `PHASE_*_PLAN.md`；产品/架构唯一信息源是 [`docs/design.md`](docs/design.md)。
 
@@ -259,7 +261,7 @@ flowchart LR
 1. **砍掉 Prompt 管理 UI**（ADR-003）：prompt 当配置文件交给 git 管版本，聚焦"评测"这一差异化能力，不在红海里再造一个 prompt hub。
 2. **四维 + 显著性 + 归因 gate**（ADR-004）：单 pass-rate 卡口有"漏判 / 误 block / 不可解释"三个坑；多轴覆盖漏判、bootstrap CI 防误 block、tag 归因给根因。
 3. **任务分层 + 多 judge 去偏**（ADR-005）：单 judge 是 baseline，方差 ±15% 且有 position/verbosity/self-preference bias；任务分层 + cross-vote + position-swap + self-consistency 把方差降到 ±3%、κ vs 人工逼近 double-human 上限。
-4. **存原始、读时变换**（ADR-012/013）：序贯判定与 judge 校准都不改 `eval_results` 原始分数，校准曲线/序贯参数随时可重算，runner 零改动。
+4. **存原始、读时变换**（ADR-012/013/016）：序贯判定、judge 校准、按 task_type / judge 的条件校准曲线都不改 `eval_results` 原始分数，曲线随时可重算、可换分组重拟合，runner 零改动。κ 一致性（ADR-014）复用同一张 `human_labels` 表；p95 尾延迟显著性用平滑 + 样本量守卫的 bootstrap，避免小样本误 block（ADR-015）。
 
 ## 项目文档
 
@@ -317,6 +319,10 @@ make ci-gate-real   # 真模型，需要本机 Ollama 装好 qwen3.5:9b + qwen3-
 | `make adversarial-smoke` | Adversarial Synth 端到端 smoke（离线：自动出题 → 人审 → gate fail） |
 | `make sequential-smoke` | Sequential Gate smoke（离线合成：提前 FAIL / PASS，打印省调用比例） |
 | `make calibration-smoke` | Judge Calibration smoke（离线合成：ECE 下降、拟合温度、reliability 图） |
+| `make kappa-smoke` | Phase 17 smoke（离线合成：Cohen's κ 一致性 + 守卫式 p95 显著性 + 条件校准） |
+| `make docker-build` | 构建生产 API 镜像（多阶段 / 非 root / HEALTHCHECK） |
+| `make tf-init` / `tf-plan` / `tf-apply` / `tf-destroy` | AWS ECS+RDS 栈的 Terraform 生命周期 |
+| `make deploy` / `make deploy-migrate` | 推镜像滚动 ECS 服务 / 跑一次性迁移任务 |
 
 ## 运维 UI
 
@@ -331,6 +337,27 @@ make ui                         # 另一个 shell — 8501 端口，会自动开
 ```
 
 四个页面：**Traces**（分页列表 + span 树，"Promote to eval set"）· **Eval Sets**（新建 + 看 cases）· **Reports**（选 eval set + 两个 run，渲染四维结论 + 子维度 + tag 归因）· **Generate Trace**（在 UI 里造一条 demo trace 推到后端）。API 地址用 `EVALGATE_API_URL` 配置（默认 `http://127.0.0.1:8000`）。
+
+## 部署
+
+**本地 / demo（Docker Compose）** —— 一条命令起 Postgres + API，容器启动时自动跑迁移（`RUN_MIGRATIONS=true`）：
+
+```bash
+docker compose up --build      # API 在 http://127.0.0.1:8000，/healthz 探活
+```
+
+生产镜像是**多阶段 + 非 root（uid 10001）+ 容器 HEALTHCHECK**，入口 [`docker-entrypoint.sh`](docker-entrypoint.sh) 分 `serve`（可选先迁移再起 uvicorn）/ `migrate`（只跑 `alembic upgrade head`）两命令。
+
+**云 / 生产 demo（AWS ECS Fargate + RDS）** —— Terraform 一键起 VPC + ALB + ECS 服务 + RDS + ECR + Secrets Manager，发布走 **GitHub OIDC**（零长期密钥）：
+
+```bash
+cd deploy/terraform && cp terraform.tfvars.example terraform.tfvars
+make tf-init && make tf-apply      # 起云栈（会产生 AWS 费用，用完 make tf-destroy）
+make deploy                         # build+push 镜像，滚动 ECS 服务（迁移随任务启动）
+curl "$(terraform -chdir=deploy/terraform output -raw alb_url)/healthz"
+```
+
+栈的模块划分、成本取舍（刻意省 NAT gateway）、生产硬化清单（私网 + NAT、HTTPS/ACM、远端 state、Multi-AZ）见 [`deploy/terraform/README.md`](deploy/terraform/README.md)、[`docs/PHASE_18_PLAN.md`](docs/PHASE_18_PLAN.md) 与 ADR-017。
 
 ## 贡献
 

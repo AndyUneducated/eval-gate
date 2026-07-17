@@ -1,0 +1,59 @@
+name: deploy
+
+# Manual, OIDC-authenticated deploy: build the API image, push to ECR, and roll
+# the ECS service. No long-lived AWS keys — the job assumes an IAM role via the
+# GitHub OIDC provider (see deploy/terraform/oidc.tf). Configure these repo-level
+# Actions *variables* first (Settings -> Secrets and variables -> Actions):
+#   AWS_REGION, AWS_DEPLOY_ROLE_ARN, ECR_REPOSITORY, ECS_CLUSTER, ECS_SERVICE
+# (all are Terraform outputs). The service applies migrations on task start
+# (RUN_MIGRATIONS=true), so this deploy also migrates the schema.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          image="$REGISTRY/$ECR_REPOSITORY"
+          docker build -t "$image:${{ github.sha }}" -t "$image:latest" .
+          docker push "$image:${{ github.sha }}"
+          docker push "$image:latest"
+
+      - name: Force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --force-new-deployment >/dev/null
+
+      - name: Wait for service to stabilize
+        run: aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
