@@ -9,17 +9,13 @@ hits the same code paths as production Postgres.
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.db.models import EvalJudgeCallRow, EvalResultRow, EvalRunRow
+from evalgate.db.query_helpers import new_id as _new_id
 from evalgate.judge.protocol import JudgeCallRecord
-
-
-def _new_id() -> str:
-    return uuid4().hex
 
 
 def _normalise_axis_breakdown(

@@ -135,7 +135,10 @@ def _normalize_json_ids(payload: dict[str, Any]) -> dict[str, Any]:
 
     out = copy.deepcopy(payload)
     for rs in out.get("resourceSpans", []) or []:
-        for ss in (rs.get("scopeSpans") or []) + (rs.get("instrumentationLibrarySpans") or []):
+        # Only ``scopeSpans`` — the deprecated ``instrumentationLibrarySpans``
+        # field is rejected by ``Parse`` below anyway, so normalizing ids inside
+        # it would never reach a successful parse.
+        for ss in rs.get("scopeSpans") or []:
             for span in ss.get("spans", []) or []:
                 for field, hex_len in _ID_HEX_LEN.items():
                     if field in span:
@@ -153,6 +156,11 @@ def parse_otlp_json(payload: dict[str, Any]) -> tuple[list[Span], dict[str, Any]
     Hex-encoded ids (the OTLP/JSON convention) are normalized to base64 before
     handing the envelope to the protobuf-JSON parser.
     """
+    if not isinstance(payload, dict):
+        # A bare JSON scalar/array (e.g. ``json.loads("5")``) would otherwise hit
+        # ``.get`` in normalization and escape as an uncaught 500; a ValueError
+        # maps to the router's 422.
+        raise ValueError("OTLP/JSON body must be a JSON object")
     req = ExportTraceServiceRequest()
     Parse(json.dumps(_normalize_json_ids(payload)), req)
     return _parse_request(req)

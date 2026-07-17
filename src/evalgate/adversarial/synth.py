@@ -19,11 +19,10 @@ Two hard guarantees so this is safe inside CI and a flaky-LLM world:
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from evalgate.judge.protocol import acompletion_json
+from evalgate.judge.protocol import acompletion_json, loads_tolerant_json
 from evalgate.safety.jailbreak import DEFAULT_JAILBREAK_KEYWORDS
 
 DEFAULT_INPUT_KEY = "question"
@@ -144,7 +143,7 @@ def _coerce_input(value: Any, *, input_key: str) -> dict[str, Any] | None:
 
 
 def _parse_cases(text: str, *, tag: str, input_key: str) -> list[GeneratedCase]:
-    payload = _loads_tolerant(text)
+    payload = loads_tolerant_json(text)
     if not isinstance(payload, dict):
         return []
     raw_cases = payload.get("cases")
@@ -171,22 +170,6 @@ def _parse_cases(text: str, *, tag: str, input_key: str) -> list[GeneratedCase]:
             )
         )
     return out
-
-
-def _loads_tolerant(text: str) -> Any:
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match is None:
-        return None
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
 
 
 def _mock_cases(*, tag: str, k: int, input_key: str) -> list[GeneratedCase]:

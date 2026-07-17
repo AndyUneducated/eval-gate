@@ -151,8 +151,12 @@ def build_safety_pipeline(spec: PromptSpec, *, mock: bool) -> SafetyPipeline | N
     safety: SafetySpec = spec.safety
     if not safety.enabled:
         return None
+    pii = PresidioPiiDetector(safety.pii)
+    # Fail fast if the PII backend can't load: otherwise every per-case scan
+    # raises and is swallowed to 0.0, so the run reports a bogus "no PII" signal.
+    pii.warmup()
     return SafetyPipeline(
-        pii=PresidioPiiDetector(safety.pii),
+        pii=pii,
         jailbreak=JailbreakDetector(safety.jailbreak),
     )
 

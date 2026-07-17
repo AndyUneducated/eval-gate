@@ -7,6 +7,7 @@ policy lives in exactly one place.
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -34,7 +35,9 @@ async def require_api_key(
     if not provided and authorization:
         scheme, _, token = authorization.partition(" ")
         provided = token.strip() if scheme.lower() == "bearer" else authorization.strip()
-    if provided != expected:
+    # Constant-time compare so a timing side-channel can't leak the key byte by
+    # byte. ``compare_digest`` needs a real string, not ``None``.
+    if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or missing API key",

@@ -31,8 +31,6 @@ class SelfConsistencyVerdict:
     # MultiJudge drops such a sub-judge instead of folding a bogus number in.
     mean_score: float | None
     confidence: float
-    per_run_scores: list[float]
-    agreements: list[bool] | None
 
 
 class SelfConsistencyJudge:
@@ -75,12 +73,6 @@ class SelfConsistencyJudge:
         verdicts = [r for r in results if isinstance(r, LeafVerdict)]
         # Exclude no-signal runs (transport-failed leaf calls -> score None).
         scores = [r.score for r in verdicts if r.score is not None]
-        agreements_raw = [r.agreement for r in verdicts]
-        agreements: list[bool] | None = (
-            [bool(a) for a in agreements_raw]
-            if any(a is not None for a in agreements_raw)
-            else None
-        )
         calls: list[JudgeCallRecord] = []
         for r in verdicts:
             calls.extend(r.calls)
@@ -95,10 +87,5 @@ class SelfConsistencyJudge:
             mean = None
             confidence = 0.0
 
-        verdict = SelfConsistencyVerdict(
-            mean_score=mean,
-            confidence=confidence,
-            per_run_scores=scores,
-            agreements=agreements,
-        )
+        verdict = SelfConsistencyVerdict(mean_score=mean, confidence=confidence)
         return verdict, calls

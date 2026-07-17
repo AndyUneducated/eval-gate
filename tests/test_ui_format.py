@@ -120,6 +120,20 @@ def test_extract_axis_value_picks_right_field_per_axis() -> None:
     assert extract_axis_value("latency_p95", record) == 1200.0
 
 
+def test_extract_axis_value_safety_reads_breakdown_not_score() -> None:
+    # Safety is breakdown-only: the per-case value must come from
+    # axis_breakdown.safety (any-violation flag), NOT the quality score.
+    clean = {"score": 0.9, "axis_breakdown": {"safety": {"pii_input_rate": 0.0}}}
+    assert extract_axis_value("safety", clean) == 0.0
+    violated = {
+        "score": 0.9,
+        "axis_breakdown": {"safety": {"pii_input_rate": 0.0, "jailbreak_compliance_rate": 1.0}},
+    }
+    assert extract_axis_value("safety", violated) == 1.0
+    # No safety bucket at all -> 0.0 (not the 0.9 score).
+    assert extract_axis_value("safety", {"score": 0.9}) == 0.0
+
+
 def test_per_case_axis_deltas_pairs_by_case_id_and_drops_unpaired() -> None:
     baseline = [
         {"case_id": "a", "score": 0.9, "tags": ["billing"]},

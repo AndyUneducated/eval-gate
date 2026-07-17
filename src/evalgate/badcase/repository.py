@@ -24,8 +24,6 @@ Errors raised (mapped to HTTP in `api.routers.badcase`):
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +33,7 @@ from evalgate.db.models import (
     EvalCaseSetMembershipRow,
     EvalResultRow,
 )
+from evalgate.db.query_helpers import new_id as _new_id
 from evalgate.eval_set import repository as set_repo
 
 
@@ -57,10 +56,6 @@ class AlreadyPromotedError(EvalGateError, ValueError):
     http_status = 409
     exit_code = 1
     slug = "already_promoted"
-
-
-def _new_id() -> str:
-    return uuid4().hex
 
 
 async def promote_result_to_set(

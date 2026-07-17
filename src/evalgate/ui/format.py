@@ -148,6 +148,17 @@ def extract_axis_value(axis_name: str, record: dict[str, Any]) -> float:
         return float(record.get("latency_ms", 0) or 0)
     if axis_name == "cost":
         return float(record.get("cost_usd", 0.0) or 0.0)
+    if axis_name == "safety":
+        # Safety is breakdown-only (no scalar column); per-case value is a 0/1
+        # "any violation" flag over the four sub-rates in axis_breakdown.safety.
+        # Falling through to ``score`` here would show the quality score and
+        # even color safety regressions as improvements.
+        breakdown = record.get("axis_breakdown") or {}
+        bucket = breakdown.get("safety") if isinstance(breakdown, dict) else None
+        if isinstance(bucket, dict) and bucket:
+            vals = [float(v) for v in bucket.values() if isinstance(v, (int, float))]
+            return max(vals) if vals else 0.0
+        return 0.0
     # default: quality (or unknown -> score)
     return float(record.get("score", 0.0) or 0.0)
 

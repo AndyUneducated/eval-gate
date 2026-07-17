@@ -22,7 +22,6 @@ from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +37,7 @@ from evalgate.core.schemas import (
 )
 from evalgate.db.models import EvalCaseRow, EvalResultRow, EvalRunRow, HumanLabelRow
 from evalgate.db.query_helpers import latest_by
+from evalgate.db.query_helpers import new_id as _new_id
 from evalgate.report import agreement as agr
 from evalgate.report import calibration as cal
 
@@ -56,10 +56,6 @@ class InsufficientLabelsError(EvalGateError, RuntimeError):
     http_status = 422
     exit_code = 2
     slug = "insufficient_labels"
-
-
-def _new_id() -> str:
-    return uuid4().hex
 
 
 async def add_label(
@@ -283,6 +279,7 @@ async def compute_report(
         raise InsufficientLabelsError("no labeled, scored results to report on")
 
     groups_meta: dict[str, CalibrationGroup] = {}
+    group_keys: dict[str, str] | None = None
     if calibrator is None:
         eff_scope = scope or cal.GLOBAL_SCOPE
         group_keys = await fetch_group_keys(session, ids, scope=eff_scope)
@@ -292,7 +289,10 @@ async def compute_report(
 
     groups_seq = None
     if eff_scope != cal.GLOBAL_SCOPE:
-        group_keys = await fetch_group_keys(session, ids, scope=eff_scope)
+        # Reuse the keys fetched during fitting when possible — only the
+        # pre-fitted-calibrator branch above skips the fetch.
+        if group_keys is None:
+            group_keys = await fetch_group_keys(session, ids, scope=eff_scope)
         groups_seq = [group_keys.get(rid, "unknown") for rid in ids]
 
     stats = cal.evaluate_calibration(scores, labels, calibrator, n_bins=n_bins, groups=groups_seq)

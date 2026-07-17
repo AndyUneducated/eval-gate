@@ -249,6 +249,47 @@ def stringify(value: Any) -> str:
         return str(value)
 
 
+def loads_tolerant_json(text: Any) -> Any:
+    """Parse model output that *should* be JSON but may be fenced or prefixed.
+
+    Tries a straight ``json.loads`` first, then falls back to the first
+    ``{...}`` block in the text. Returns ``None`` when nothing parses. Shared by
+    the jailbreak classifier and adversarial synthesizer so their tolerant
+    parsing behaves identically.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match is None:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def safe_completion_cost(response: Any) -> float:
+    """Best-effort USD cost via ``litellm.completion_cost``.
+
+    ``completion_cost`` raises for models with no published pricing (e.g.
+    ``ollama/*``) — we treat that (and mock / empty / errored responses) as
+    free rather than crashing the run. Accepts either a LiteLLM response object
+    or its serialized dict (the agent runtime persists the dict form).
+    """
+    if not response:
+        return 0.0
+    if isinstance(response, dict) and response.get("error"):
+        return 0.0
+    try:
+        return float(litellm.completion_cost(completion_response=response) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def extract_text(resp: Any) -> str:
     try:
         return resp["choices"][0]["message"]["content"] or ""

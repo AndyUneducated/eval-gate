@@ -25,6 +25,11 @@ class JudgeAggregate:
     votes: dict[str, float]
     raw_calls: list[JudgeCallRecord]
     per_judge_confidence: dict[str, float]
+    # True when *every* sub-judge failed (no leaf produced a score). The neutral
+    # ``score=0.0`` we return in that case is a placeholder, not a real verdict —
+    # callers must treat it as "no signal" (an error) rather than a genuine 0.0,
+    # or a flaky provider silently poisons the run mean and the gate.
+    no_signal: bool = False
 
 
 class MultiJudge:
@@ -78,13 +83,16 @@ class MultiJudge:
             per_judge_confs.append(verdict.confidence)
 
         if not per_judge_means:
-            # Every sub-judge failed — surface a no-confidence neutral result.
+            # Every sub-judge failed — surface a no-signal result so the caller
+            # can flag the case as errored (excluded from the mean + the gate)
+            # instead of folding a fake 0.0 into quality.
             return JudgeAggregate(
                 score=0.0,
                 confidence=0.0,
                 votes=votes,
                 raw_calls=all_calls,
                 per_judge_confidence=per_judge_conf,
+                no_signal=True,
             )
 
         score = sum(per_judge_means) / len(per_judge_means)

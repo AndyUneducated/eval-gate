@@ -5,13 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import litellm
-
 from evalgate.evaluator.agent.parser import ActionParseError, parse_action
 from evalgate.evaluator.agent.tools import BuiltinToolRegistry
 from evalgate.evaluator.agent.types import AgentRuntimeResult, TrajectoryStep
 from evalgate.judge.prompt_spec import PromptSpec
-from evalgate.judge.protocol import acompletion_json
+from evalgate.judge.protocol import acompletion_json, safe_completion_cost, stringify
 
 _ACTION_SCHEMA = (
     'Respond with STRICT JSON only. Either {"action":"call_tool","tool":"<name>",'
@@ -50,7 +48,7 @@ class AgentRuntime:
                 mock_response=mock_response,
             )
             total_latency_ms += int((time.perf_counter() - t0) * 1000)
-            total_cost += _safe_cost(raw)
+            total_cost += safe_completion_cost(raw)
             llm_calls.append({"step_idx": step_idx, "response_text": text, "raw": raw})
             messages.append({"role": "assistant", "content": text})
 
@@ -96,7 +94,7 @@ class AgentRuntime:
                     "role": "user",
                     "content": (
                         "TOOL_OBSERVATION:\n"
-                        f'{{"tool":"{action.tool}","observation":{_json_dump(observation)}}}\n'
+                        f'{{"tool":"{action.tool}","observation":{stringify(observation)}}}\n'
                         "Now choose the next action."
                     ),
                 }
@@ -110,17 +108,6 @@ class AgentRuntime:
             cost_usd=total_cost,
             latency_ms=total_latency_ms,
         )
-
-
-def _safe_cost(raw: Any) -> float:
-    """Best-effort per-call cost; 0.0 for mock / un-priced models (mirrors
-    ``judge.candidate._safe_cost`` but reads the serialized response dict)."""
-    if not raw or not isinstance(raw, dict) or raw.get("error"):
-        return 0.0
-    try:
-        return float(litellm.completion_cost(completion_response=raw) or 0.0)
-    except Exception:
-        return 0.0
 
 
 def _bootstrap_messages(
@@ -143,12 +130,3 @@ def _mock_action(step_idx: int, tool_names: list[str]) -> str:
     if step_idx == 1 and len(tool_names) > 1:
         return f'{{"action":"call_tool","tool":"{tool_names[1]}","args":{{}}}}'
     return '{"action":"final_answer","answer":"mock-final-answer"}'
-
-
-def _json_dump(value: Any) -> str:
-    import json
-
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        return json.dumps({"repr": repr(value)}, ensure_ascii=False, sort_keys=True)

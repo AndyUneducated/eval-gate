@@ -19,6 +19,7 @@ from google.protobuf.json_format import ParseError
 from google.protobuf.message import DecodeError
 
 from evalgate.api.deps import SessionDep
+from evalgate.core.config import get_settings
 from evalgate.core.logging import get_logger
 from evalgate.ingest.otlp import parse_otlp_json, parse_otlp_protobuf
 from evalgate.ingest.persistence import persist_spans
@@ -33,6 +34,15 @@ async def ingest_otlp(request: Request, session: SessionDep) -> Response:
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
+    # Hard cap independent of Content-Length: the middleware guard only sees the
+    # declared length, so a chunked / header-less upload would otherwise slip a
+    # multi-GB protobuf straight into memory here (the actual DoS vector).
+    max_bytes = get_settings().max_request_bytes
+    if len(body) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"request body exceeds {max_bytes} bytes",
+        )
 
     try:
         if "protobuf" in ctype:

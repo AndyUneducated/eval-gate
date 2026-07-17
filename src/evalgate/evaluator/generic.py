@@ -31,8 +31,12 @@ def _reference_text(expected: dict[str, Any] | None) -> str | None:
         return None
     for key in ("output", "answer"):
         val = expected.get(key)
-        if isinstance(val, str) and val.strip():
-            return val
+        if isinstance(val, str):
+            # An empty / whitespace string is "no reference", not a blank one —
+            # keep looking (and don't coerce "" into a bogus reference).
+            if val.strip():
+                return val
+            continue
         if val is not None:
             return stringify(val)
     return stringify(expected)
@@ -94,6 +98,21 @@ class GenericEvaluator:
                 reason=f"runner-failure: {exc}",
                 error=True,
                 error_kind="runner_failure",
+            )
+
+        if agg.no_signal:
+            # Every judge call failed (e.g. provider outage). Treat as "couldn't
+            # be judged" — an error excluded from the mean + gate — not a real 0.0.
+            return EvaluationOutcome(
+                score=0.0,
+                output_text=candidate.text,
+                cost_usd=candidate.cost_usd,
+                latency_ms=candidate.latency_ms,
+                raw_calls=list(agg.raw_calls),
+                judge_raw={"error": "all_judges_failed", "mode": mode},
+                reason="all judge calls failed (no signal)",
+                error=True,
+                error_kind="all_judges_failed",
             )
 
         judge_raw: dict[str, Any] = {

@@ -31,9 +31,14 @@ from evalgate.core.schemas import Span
 from evalgate.db.models import SpanRow, TraceRow
 
 
+def _dialect_name(session: AsyncSession) -> str:
+    """Bound dialect name, defaulting to postgresql when unbound (production)."""
+    return session.bind.dialect.name if session.bind else "postgresql"
+
+
 def _bulk_upsert_spans(session: AsyncSession, rows: list[dict[str, Any]]):
     """Return a dialect-appropriate INSERT … ON CONFLICT DO NOTHING for spans."""
-    dialect = session.bind.dialect.name if session.bind else "postgresql"
+    dialect = _dialect_name(session)
     stmt: Any
     if dialect == "sqlite":
         stmt = sqlite_insert(SpanRow).values(rows)
@@ -56,7 +61,7 @@ def _trace_upsert(session: AsyncSession, row: dict[str, Any], *, has_resource_at
     actually carries some (``has_resource_attrs``) — an empty ``{}`` must not
     clobber previously-stored attributes.
     """
-    dialect = session.bind.dialect.name if session.bind else "postgresql"
+    dialect = _dialect_name(session)
     stmt: Any
     greatest: Any
     least: Any
@@ -116,14 +121,24 @@ async def persist_spans(
 
     # Read back the authoritative aggregate from `spans` so replays /
     # out-of-order partial deliveries always converge to the right rollup
-    # rather than double-counting.
-    for trace_id, group in by_trace.items():
-        agg_stmt = select(
+    # rather than double-counting. One grouped query for every touched trace
+    # (was one round-trip per trace_id — an N+1 on the ingest hot path).
+    agg_stmt = (
+        select(
+            SpanRow.trace_id,
             func.min(SpanRow.start_time),
             func.max(SpanRow.end_time),
             func.count(SpanRow.span_id),
-        ).where(SpanRow.trace_id == trace_id)
-        start_time, end_time, span_count = (await session.execute(agg_stmt)).one()
+        )
+        .where(SpanRow.trace_id.in_(list(by_trace.keys())))
+        .group_by(SpanRow.trace_id)
+    )
+    agg_by_trace = {
+        tid: (start, end, count) for tid, start, end, count in (await session.execute(agg_stmt))
+    }
+
+    for trace_id, group in by_trace.items():
+        start_time, end_time, span_count = agg_by_trace[trace_id]
 
         root = next((s for s in group if not s.parent_span_id), None)
         row = {

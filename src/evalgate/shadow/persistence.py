@@ -8,16 +8,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from evalgate.db.models import ShadowObservationRow, ShadowReportRow
-
-
-def _new_id() -> str:
-    return uuid4().hex
+from evalgate.db.query_helpers import new_id as _new_id
 
 
 async def add_observation(

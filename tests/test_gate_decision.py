@@ -107,6 +107,30 @@ def test_latency_p95_regression_fails_when_tail_worsens() -> None:
     assert latency.significant
 
 
+def test_error_records_excluded_from_gate() -> None:
+    # A case that couldn't be judged (error=True, placeholder score=0.0) must
+    # not be counted as a quality-0 regression — it's "no data", not "bad".
+    base = _make_records(seed=0)
+    cand = _make_records(seed=0)
+    cand.append(
+        {
+            "case_id": "boom",
+            "tags": ["billing"],
+            "score": 0.0,
+            "cost_usd": 0.0,
+            "latency_ms": 0,
+            "error": True,
+            "error_kind": "all_judges_failed",
+        }
+    )
+    report = build_gate_report(base, cand)
+    assert report.passed
+    quality = next(a for a in report.axes if a.name == "quality")
+    assert quality.passed
+    # The errored case's 0.0 didn't drag the candidate mean below baseline.
+    assert quality.candidate >= 0.75
+
+
 def test_all_four_axes_can_fail_together() -> None:
     base = _make_records(seed=0)
     cand = _make_records(seed=0)

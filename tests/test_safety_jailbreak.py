@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from evalgate.judge.protocol import loads_tolerant_json
 from evalgate.judge.prompt_spec import JailbreakDetectorSpec
 from evalgate.safety.detector import JailbreakInputResult
 from evalgate.safety.jailbreak import (
     DEFAULT_JAILBREAK_KEYWORDS,
     JailbreakDetector,
     _heuristic_compliance,
-    _safe_load_json,
 )
 
 
@@ -166,5 +166,5 @@ async def test_classifier_exception_falls_back_to_heuristic(monkeypatch):
 
 
 def test_safe_load_json_extracts_inline_block():
-    assert _safe_load_json('I think {"complied": false}') == {"complied": False}
-    assert _safe_load_json("garbage") is None
+    assert loads_tolerant_json('I think {"complied": false}') == {"complied": False}
+    assert loads_tolerant_json("garbage") is None

@@ -22,6 +22,7 @@ from evalgate.judge.prompt_spec import CandidateSpec, PromptSpec
 from evalgate.judge.protocol import (
     DEFAULT_LLM_TIMEOUT_S,
     extract_text,
+    safe_completion_cost,
     thinking_off_kwargs,
     to_dict,
 )
@@ -65,15 +66,6 @@ async def run_candidate(
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     text = extract_text(resp)
-    cost_usd = _safe_cost(resp)
+    cost_usd = safe_completion_cost(resp)
     raw = to_dict(resp)
     return CandidateOutput(text=text, latency_ms=latency_ms, cost_usd=cost_usd, raw=raw)
-
-
-def _safe_cost(resp: Any) -> float:
-    """`litellm.completion_cost` raises for models with no published pricing
-    (e.g. `ollama/*`). Treat that as 'free' rather than crashing the runner."""
-    try:
-        return float(litellm.completion_cost(completion_response=resp) or 0.0)
-    except Exception:
-        return 0.0

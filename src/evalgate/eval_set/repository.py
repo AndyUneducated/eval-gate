@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from evalgate.core.errors import EvalGateError
 from evalgate.core.schemas import CaseSource, CaseStatus, TaskKind
 from evalgate.db.models import EvalCaseRow, EvalCaseSetMembershipRow, EvalSetRow
+from evalgate.db.query_helpers import new_id as _new_id
 from evalgate.ingest import persistence
 from evalgate.ingest.case_extract import NoLLMSpanError, extract_case_from_trace
 
@@ -35,10 +35,6 @@ class TraceNotFoundError(EvalGateError, LookupError):
     http_status = 404
     exit_code = 1
     slug = "trace_not_found"
-
-
-def _new_id() -> str:
-    return uuid4().hex
 
 
 async def create_eval_set(

@@ -27,7 +27,6 @@ shave Python overhead.
 from __future__ import annotations
 
 import contextlib
-import math
 import statistics
 from typing import Any
 
@@ -36,7 +35,7 @@ from evalgate.evaluator.base import EvaluationOutcome
 from evalgate.evaluator.rag.retriever import EmbeddingRetriever
 from evalgate.judge.candidate import run_candidate
 from evalgate.judge.prompt_spec import PromptSpec
-from evalgate.judge.protocol import MAX_STD_SCORE_SPREAD, JudgeCallRecord
+from evalgate.judge.protocol import MAX_STD_SCORE_SPREAD, JudgeCallRecord, clamp_score
 
 
 def _question_for(case: EvalCaseRow) -> str:
@@ -333,18 +332,12 @@ def _extract_scores(result: Any, requested: list[str]) -> dict[str, float]:
             if v is not None:
                 value = float(v) if not isinstance(v, list) else float(sum(v) / max(1, len(v)))
                 break
-        sub[canonical] = _clamp(value if value is not None else 0.0)
+        sub[canonical] = clamp_score(value if value is not None else 0.0)
     return sub
 
 
-def _clamp(v: float) -> float:
-    if v is None or math.isnan(v):
-        return 0.0
-    return max(0.0, min(1.0, float(v)))
-
-
 def _mean_clamped(values: Any) -> float:
-    vals = [_clamp(float(v)) for v in values]
+    vals = [clamp_score(v) for v in values]
     if not vals:
         return 0.0
     return sum(vals) / len(vals)

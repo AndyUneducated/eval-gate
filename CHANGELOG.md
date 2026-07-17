@@ -31,9 +31,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mean (was a product that decayed toward 0 as judges were added).
 - Judge/candidate LLM calls now carry a default 60s timeout.
 - Database engine uses a tuned connection pool and is disposed on shutdown.
+- Deduplicated shared helpers: one `new_id()` (was five identical `_new_id`),
+  one `safe_completion_cost()` / `stringify()` (was copy-pasted per module),
+  one `loads_tolerant_json()` (was duplicated in the jailbreak classifier and
+  adversarial synthesizer), one `clamp_score()` (RAG evaluator dropped its local
+  `_clamp`), and one `_dialect_name()` in the ingest persistence layer.
+- Trace-rollup aggregate read is a single grouped query (was one round-trip per
+  trace_id on the ingest hot path).
+- Calibration `compute_report` fetches group keys once instead of twice for
+  conditional (non-global) scopes.
+- README gained a module map, a deep usage walkthrough (prompt.yaml anatomy,
+  full CLI lifecycle, shadow SDK), a REST API reference, and a key-algorithm
+  index.
 
 ### Fixed
 
+- Cases that fail to evaluate (`error=True` — unsupported task, missing
+  reference, runner failure, or every judge call failing) are now excluded from
+  every gate axis and tag attribution, so an infra failure can't be counted as a
+  quality-0 regression and false-block a PR. When every judge fails on a case,
+  the generic evaluator flags it as an error rather than emitting a real `0.0`.
+- Sequential gate skips errored candidate records instead of feeding their
+  placeholder `0.0` diff into the alpha-spending boundary (could trip an early
+  FAIL).
+- UI Reports: the safety axis now reads per-case values from
+  `axis_breakdown.safety` (any-violation flag) instead of falling through to the
+  quality score, so safety attribution/coloring is correct.
+- API key comparison is constant-time (`hmac.compare_digest`), closing a timing
+  side-channel.
+- OTLP ingest enforces the body-size cap on the raw read, so a chunked /
+  `Content-Length`-less upload can't bypass the middleware memory-DoS guard.
+- `/readyz` no longer echoes raw database exception text to unauthenticated
+  callers (logged server-side instead).
 - OTLP/JSON ingest now round-trips hex-encoded trace/span ids correctly (were
   mis-decoded as base64), so real OTLP exporters interoperate.
 - Malformed OTLP bodies return HTTP 422 instead of a 500 (protobuf
@@ -52,6 +81,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty payload clobber stored `resource_attributes`.
 - UI: safety-axis deltas are colored as regressions when rates rise; span names
   are HTML-escaped before rendering.
+- Safety pipeline fails fast at build time when `presidio-analyzer` is missing
+  (was swallowed per-case, silently reporting a bogus 0% PII / "clean" signal
+  for the whole run).
+- OTLP/JSON ingest returns HTTP 422 for a non-object JSON body (bare scalar /
+  array) instead of an uncaught 500.
+- Domain-error responses include the stable machine-readable `error` slug
+  (`{"error": ..., "detail": ...}`), matching the CLI's JSON error shape.
+- CORS no longer enables credentials against a wildcard origin (would reflect
+  cookies/`Authorization` back to any site).
+- Empty/whitespace `output`/`answer` reference fields are treated as "no
+  reference" rather than a blank reference string.
+- Mock RAG pseudo-embeddings now vary across all vector dimensions (the previous
+  hash reused only 8 distinct components, collapsing cosine geometry).
 
 ## [0.1.0]
 

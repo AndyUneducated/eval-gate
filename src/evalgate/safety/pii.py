@@ -46,6 +46,16 @@ class PresidioPiiDetector:
             self._recognizers = _build_pattern_recognizers(self._spec.entities)
             return self._recognizers
 
+    def warmup(self) -> None:
+        """Eagerly build recognizers.
+
+        Called at pipeline-build time so a missing/broken ``presidio-analyzer``
+        install surfaces as a loud RuntimeError at run start, instead of being
+        swallowed per-case in :meth:`scan` and silently reporting 0% PII (a
+        false "clean" safety signal) for the entire run.
+        """
+        self._ensure_loaded()
+
     def scan(self, text: str) -> PiiScanResult:
         """Run every configured recognizer over ``text`` and collect hits.
 

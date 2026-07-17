@@ -4,15 +4,29 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from evalgate.core.schemas import AxisMetric, GateReport, RecordInput
+from evalgate.core.schemas import AxisMetric, EvalRecord, GateReport, RecordInput, coerce_records
 from evalgate.report.attribution import tagwise_attribution
 from evalgate.report.multi_axis import build_axis_metrics
+
+
+def _scored(records: Sequence[RecordInput]) -> list[EvalRecord]:
+    """Drop cases that failed to evaluate (``error=True``).
+
+    Infra failures — unsupported task type, missing reference, runner failure,
+    or every judge call failing — are persisted with a placeholder ``score=0.0``.
+    Feeding those into the axes would count "couldn't be judged" as a quality-0
+    regression and could false-block a PR, so we exclude them from every axis
+    and from tag attribution (matching ``run_eval``'s headline-mean exclusion).
+    """
+    return [r for r in coerce_records(records) if not r.error]
 
 
 def build_gate_report(
     baseline: Sequence[RecordInput],
     candidate: Sequence[RecordInput],
 ) -> GateReport:
+    baseline = _scored(baseline)
+    candidate = _scored(candidate)
     axes = build_axis_metrics(baseline, candidate)
     attribution = tagwise_attribution(baseline, candidate)
     passed = all(axis.passed for axis in axes)

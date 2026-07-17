@@ -78,6 +78,22 @@ async def test_disagreeing_judges_low_confidence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_all_judges_failing_yields_no_signal(monkeypatch):
+    # Every leaf call returns an empty completion (transport failure), so every
+    # sub-judge produces score=None. The aggregate must flag ``no_signal`` (a
+    # placeholder 0.0) instead of silently reporting a real 0.0 verdict.
+    async def fail(**kwargs):
+        return "", {}
+
+    monkeypatch.setattr("evalgate.judge.pointwise.acompletion_json", fail)
+    multi = _stack(["ollama/judge-a", "ollama/judge-b"], k=2)
+    agg = await multi.score("input", "output", mock=False)
+    assert agg.no_signal is True
+    assert agg.votes == {}
+    assert agg.confidence == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
 async def test_single_judge_falls_back_to_self_consistency_only(monkeypatch):
     _patch_pointwise_by_model(monkeypatch, {"ollama/only-judge": [0.7, 0.7, 0.7]})
     multi = _stack(["ollama/only-judge"], k=3)

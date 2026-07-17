@@ -52,10 +52,14 @@ def create_app() -> FastAPI:
     )
 
     if settings.cors_origins_list:
+        origins = settings.cors_origins_list
+        # Never allow credentials against a wildcard origin: that would reflect
+        # cookies/Authorization back to *any* site. Credentials are only enabled
+        # when the operator pins explicit origins.
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=settings.cors_origins_list,
-            allow_credentials=True,
+            allow_origins=origins,
+            allow_credentials="*" not in origins,
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -100,8 +104,10 @@ def create_app() -> FastAPI:
 
         Routers raise repository errors directly (no per-route ``try/except ...
         raise HTTPException``); the status code lives on the error class
-        (``core.errors``), so the API and CLI can't drift."""
-        return JSONResponse(status_code=exc.http_status, content={"detail": str(exc)})
+        (``core.errors``), so the API and CLI can't drift. The body uses
+        ``exc.payload()`` (``{"error": slug, "detail": message}``) so the stable
+        machine-readable slug matches what the CLI JSON output emits."""
+        return JSONResponse(status_code=exc.http_status, content=exc.payload())
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
@@ -117,10 +123,13 @@ def create_app() -> FastAPI:
         """
         try:
             await session.execute(text("SELECT 1"))
-        except Exception as exc:
+        except Exception:
+            # Log the real error server-side; don't leak DB connection details
+            # (host / driver / creds fragments) to an unauthenticated caller.
+            get_logger("evalgate.api").warning("readyz.db_unavailable", exc_info=True)
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={"status": "unavailable", "detail": str(exc)},
+                content={"status": "unavailable", "detail": "database unavailable"},
             )
         return JSONResponse(content={"status": "ready", "version": __version__})
 

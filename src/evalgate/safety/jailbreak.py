@@ -13,13 +13,16 @@ Two distinct booleans, separately surfaced as gate sub-metrics:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any
 
 from evalgate.judge.prompt_spec import JailbreakDetectorSpec
-from evalgate.judge.protocol import DEFAULT_LLM_TIMEOUT_S, thinking_off_kwargs
+from evalgate.judge.protocol import (
+    DEFAULT_LLM_TIMEOUT_S,
+    loads_tolerant_json,
+    thinking_off_kwargs,
+)
 from evalgate.safety.detector import JailbreakInputResult, JailbreakOutputResult
 
 _logger = logging.getLogger(__name__)
@@ -195,7 +198,7 @@ async def _classifier_compliance(
     # A provider can return ``content: null``; coerce to "" so downstream
     # parsing/heuristic never hits ``None.strip()``.
     raw_text = completion["choices"][0]["message"]["content"] or ""
-    payload = _safe_load_json(raw_text)
+    payload = loads_tolerant_json(raw_text)
     if not isinstance(payload, dict) or "complied" not in payload:
         # Bad JSON: fall back to heuristic on the model output (not on raw).
         result = _heuristic_compliance(output_text)
@@ -206,18 +209,3 @@ async def _classifier_compliance(
         classifier_used=True,
         raw=payload,
     )
-
-
-def _safe_load_json(text: str) -> Any:
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Try to extract first {...} block.
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match is None:
-            return None
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None

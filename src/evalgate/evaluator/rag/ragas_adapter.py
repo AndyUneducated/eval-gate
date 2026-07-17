@@ -202,17 +202,20 @@ def _hash_vector(text: str, dim: int) -> list[float]:
     meaningful — only used by mock_mode so ragas's cosine math has *some*
     signal to chew on (different strings → different vectors).
     """
-    seed = hashlib.sha256(text.encode("utf-8")).digest()
     out: list[float] = []
-    i = 0
+    counter = 0
     while len(out) < dim:
-        # 4 bytes -> uint32 -> centered into [-1, 1].
-        chunk = seed[(i * 4) % len(seed) : (i * 4) % len(seed) + 4]
-        if len(chunk) < 4:
-            chunk = (chunk + seed)[:4]
-        val = int.from_bytes(chunk, "big") / (2**32 - 1)
-        out.append(val * 2.0 - 1.0)
-        i += 1
+        # Roll a fresh 32-byte digest per counter so every component is an
+        # independent hash byte-group (a single digest only yields 8 distinct
+        # 4-byte words, collapsing the vector's geometry).
+        block = hashlib.sha256(f"{text}\x00{counter}".encode()).digest()
+        for j in range(0, len(block), 4):
+            if len(out) >= dim:
+                break
+            # 4 bytes -> uint32 -> centered into [-1, 1].
+            val = int.from_bytes(block[j : j + 4], "big") / (2**32 - 1)
+            out.append(val * 2.0 - 1.0)
+        counter += 1
     return out
 
 

@@ -222,6 +222,11 @@ async def run_sequential_gate(
     decision: seq.Decision | None = None
 
     async for rec in stream:
+        if rec.error:
+            # Couldn't be judged (unsupported task / runner failure / all judges
+            # failed). Its placeholder score=0.0 would inject a large negative
+            # diff and could trip an early FAIL — exclude it like the fixed-N gate.
+            continue
         base = baseline.get(rec.case_id)
         if base is None:
             # Unpaired candidate case (not in baseline) — still judged + persisted

@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from uuid import uuid4
+
+
+def new_id() -> str:
+    """32-char hex UUID4 — the shared primary-key generator for repositories.
+
+    Centralised so every table's string PK is minted the same way (five
+    repositories previously each defined an identical private ``_new_id``).
+    """
+    return uuid4().hex
 
 
 def latest_by[R, K, V](
