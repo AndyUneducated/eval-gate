@@ -1,4 +1,4 @@
-"""Phase 14 · Adversarial Case Synth (红队自动出题).
+"""Phase 14 · Adversarial Case Synth (automated red-team case generation).
 
 A closed-loop red-teaming flywheel: a generator-LLM auto-creates tricky cases
 for the weakest tag, which enter a human-review (``pending``) lifecycle before

@@ -1,12 +1,12 @@
-# Phase 3 · OTel 端到端打通 + Trace 浏览 API
+# Phase 3 · End-to-end OTel + Trace browse API
 
-> 把 ADR-001（OTel 作为 wire 协议）真正落地：从应用方一次带 instrumentation 的调用，到 OTLP/HTTP 上报、解析、落库、查询，跑通完整链路。
+> Land ADR-001 (OTel as the wire protocol) for real: from one instrumented app call, through OTLP/HTTP export, parse, persist, and query—the full path.
 
-## 核心思路
+## Core idea
 
-应用方（demo_app）用 LiteLLM 跑一次假调用 → OTel SDK 把 span 用 OTLP/HTTP（OpenTelemetry 线协议走 HTTP）推到 EvalGate → EvalGate 解析后写进 `traces` + `spans` 两张表 → 两个 GET 接口能查回来。
+The app (demo_app) makes one fake LiteLLM call → the OTel SDK pushes spans via OTLP/HTTP (OpenTelemetry wire protocol over HTTP) to EvalGate → EvalGate parses and writes `traces` + `spans` → two GET endpoints can read them back.
 
-## 数据流总览
+## Data-flow overview
 
 ```mermaid
 flowchart LR
@@ -24,54 +24,54 @@ flowchart LR
   DB --> Detail
 ```
 
-两种 content-type 最终汇流到同一 mapper，是本期解析层的关键设计：
+Both content-types converge on the same mapper—the key design of this phase's parse layer:
 
 ```mermaid
 flowchart TB
   Body["OTLP body"]
   PB["application/x-protobuf<br/>ExportTraceServiceRequest.FromString"]
   JSON["application/json<br/>resourceSpans[].scopeSpans[].spans[]"]
-  Walker["walker<br/>(逐 span 喂)"]
-  Mapper["otel_mapper.map_otel_span<br/>(Phase 1 写好, 复用不改)"]
-  Persist["persist_spans<br/>(幂等 upsert)"]
+  Walker["walker<br/>(feed each span)"]
+  Mapper["otel_mapper.map_otel_span<br/>(written in Phase 1, reused unchanged)"]
+  Persist["persist_spans<br/>(idempotent upsert)"]
 
   Body -->|protobuf| PB --> Walker
   Body -->|JSON| JSON --> Walker
   Walker --> Mapper --> Persist
 ```
 
-## 1. DB schema：加 `traces` 汇总表
+## 1. DB schema: add a `traces` summary table
 
-只有 `spans` 表时做 trace 列表很重（每次 `SELECT DISTINCT trace_id`）。加一张 `traces` 汇总表，每来一个 trace 算一次 min/max time、span 数量、root span 缓存住。
+With only `spans`, listing traces is heavy (a `SELECT DISTINCT trace_id` every time). Add a `traces` summary table: for each incoming trace, cache min/max time, span count, and root span.
 
-- 新建 `0002_create_traces.py` migration，字段：`trace_id`(PK) / `root_span_id` / `service_name` / `start_time` / `end_time` / `span_count` / `resource_attributes`(JSONB，Postgres 二进制 JSON 列，可建索引)。
-- 索引：`ix_traces_start_time DESC` 用于 `?since=` 翻页。
-- `src/evalgate/db/models.py` 加 `TraceRow` ORM 映射。
+- New `0002_create_traces.py` migration, fields: `trace_id` (PK) / `root_span_id` / `service_name` / `start_time` / `end_time` / `span_count` / `resource_attributes` (JSONB, Postgres binary JSON, indexable).
+- Index: `ix_traces_start_time DESC` for `?since=` pagination.
+- `src/evalgate/db/models.py` adds `TraceRow` ORM mapping.
 
-## 2. OTLP 解析层：`ingest/otlp.py`（新建）
+## 2. OTLP parse layer: `ingest/otlp.py` (new)
 
-OTLP/HTTP 的 body 有两种 content-type，按 [DECISIONS.md](../DECISIONS.md) ADR-001（拥抱 OTel）两种都收：
+OTLP/HTTP bodies have two content-types; per [DECISIONS.md](../DECISIONS.md) ADR-001 (embrace OTel) we accept both:
 
-- `application/x-protobuf` → `ExportTraceServiceRequest.FromString(body)`（来自 `opentelemetry.proto.collector.trace.v1.trace_service_pb2`）。
-- `application/json` → 解析 OTLP-JSON envelope（`resourceSpans[].scopeSpans[].spans[]`）。
+- `application/x-protobuf` → `ExportTraceServiceRequest.FromString(body)` (from `opentelemetry.proto.collector.trace.v1.trace_service_pb2`).
+- `application/json` → parse the OTLP-JSON envelope (`resourceSpans[].scopeSpans[].spans[]`).
 
-两路最终都走同一个 walker：把每个 OTLP span 喂给 Phase 1 已写好的 `src/evalgate/ingest/otel_mapper.py` 里的 `map_otel_span`（它已能吃 OTLP attribute list 形态），同时把 `Resource.attributes`（含 `service.name`）单独抽出来传给持久化层。**复用 mapper、不重写**，延续 Phase 1 的"映射不重写"惯例。
+Both paths share one walker: each OTLP span is fed to Phase 1's `map_otel_span` in `src/evalgate/ingest/otel_mapper.py` (already able to eat OTLP attribute-list shape), while `Resource.attributes` (including `service.name`) is extracted separately for persistence. **Reuse the mapper; do not rewrite**—continuing Phase 1's "map, don't rewrite" convention.
 
-## 3. 持久化层：`ingest/persistence.py`（新建）
+## 3. Persistence layer: `ingest/persistence.py` (new)
 
-单独抽一层的理由：现有 `POST /v1/traces`（Phase 1 留的接缝）也要补 DB 写入，与新 OTLP endpoint 共用同一份写库逻辑，避免两边漂移。
+Why a separate layer: the existing `POST /v1/traces` (the Phase 1 seam) also needs DB writes, and should share write logic with the new OTLP endpoint so the two cannot drift.
 
 ```python
 async def persist_spans(session, spans: list[Span], resource_attrs: dict) -> list[str]:
-    # 1) bulk insert SpanRow（ON CONFLICT (span_id) DO NOTHING，保证重推幂等）
-    # 2) 按 trace_id 分组，算 min(start)/max(end)/count/root_span_id
-    # 3) UPSERT TraceRow（ON CONFLICT (trace_id) DO UPDATE，合并 span 数与时间窗）
-    # 返回写入的 trace_id 列表
+    # 1) bulk insert SpanRow (ON CONFLICT (span_id) DO NOTHING — idempotent re-export)
+    # 2) group by trace_id, compute min(start)/max(end)/count/root_span_id
+    # 3) UPSERT TraceRow (ON CONFLICT (trace_id) DO UPDATE, merge span count and time window)
+    # return list of written trace_ids
 ```
 
-用 PG 的 `INSERT ... ON CONFLICT`（SQLAlchemy 的 `postgresql.insert(...).on_conflict_do_update`）做 idempotent（幂等，重复写入不重复计数）。同一 trace 分两次 batch 上来也能合并。SQLite 测试用 `sqlite.insert(...).on_conflict_do_*` 走同一抽象。
+Use PG `INSERT ... ON CONFLICT` (SQLAlchemy `postgresql.insert(...).on_conflict_do_update`) for idempotent writes (repeats do not double-count). The same trace arriving in two batches still merges. SQLite tests use `sqlite.insert(...).on_conflict_do_*` through the same abstraction.
 
-## 4. 新 endpoint：`api/routers/otlp.py`（新建）
+## 4. New endpoint: `api/routers/otlp.py` (new)
 
 ```python
 @router.post("/otel/traces")
@@ -80,24 +80,24 @@ async def ingest_otlp(request: Request, session=Depends(get_session)):
     body = await request.body()
     if "protobuf" in ctype:
         spans, resource_attrs = parse_otlp_protobuf(body)
-    else:  # 默认 JSON
+    else:  # default JSON
         spans, resource_attrs = parse_otlp_json(json.loads(body))
     await persist_spans(session, spans, resource_attrs)
-    # OTel SDK 期待返回 ExportTraceServiceResponse（空 partial_success 即 OK）
+    # OTel SDK expects ExportTraceServiceResponse (empty partial_success == OK)
     return Response(content=b"", media_type=ctype, status_code=200)
 ```
 
-注：OTel Python SDK 的 `OTLPSpanExporter` 默认走 `/v1/traces`，这里用 `/v1/otel/traces` 以避开和现有简化 JSON 端点的冲突——demo app 里显式传 `endpoint=`。
+Note: the OTel Python SDK `OTLPSpanExporter` defaults to `/v1/traces`. We use `/v1/otel/traces` to avoid colliding with the simplified JSON endpoint—the demo app passes `endpoint=` explicitly.
 
-## 5. List/Detail：扩展 `api/routers/traces.py`
+## 5. List/Detail: extend `api/routers/traces.py`
 
-- `GET /v1/traces?limit=50&since=<ISO8601>&service=<name>` → 按 `start_time DESC` 翻页，返回 `[{trace_id, service_name, start_time, end_time, span_count}]`。
-- `GET /v1/traces/{trace_id}` → `{trace_id, service_name, resource_attributes, spans: [...]}`（spans 按 `start_time ASC`，前端可直接画 span tree）。
-- 同时把现有 `POST /v1/traces` 简化端点的接缝补上：调 `persist_spans`（保留简化 JSON 入口，给测试 / 手动 curl 用）。
+- `GET /v1/traces?limit=50&since=<ISO8601>&service=<name>` → paginate by `start_time DESC`, return `[{trace_id, service_name, start_time, end_time, span_count}]`.
+- `GET /v1/traces/{trace_id}` → `{trace_id, service_name, resource_attributes, spans: [...]}` (spans by `start_time ASC`; the UI can draw a span tree directly).
+- Also close the `POST /v1/traces` simplified-endpoint seam: call `persist_spans` (keep the simplified JSON entrypoint for tests / manual curl).
 
-## 6. Demo app：`examples/demo_app/`
+## 6. Demo app: `examples/demo_app/`
 
-走 LiteLLM + `mock_response`（离线假响应）。后续引入真 judge 时这一层升级成真调用，端到端代码不动。
+LiteLLM + `mock_response` (offline fake response). When a real judge is introduced later, this layer upgrades to real calls; the end-to-end code stays put.
 
 ```python
 # examples/demo_app/pipeline.py
@@ -131,41 +131,41 @@ def main() -> None:
     provider.force_flush()
 ```
 
-## 7. 依赖
+## 7. Dependencies
 
-- `opentelemetry-proto>=1.27` — protobuf 消息类（运行时依赖，约 200KB）。
-- `protobuf>=5` — 上面 transitive，显式锁一下。
+- `opentelemetry-proto>=1.27` — protobuf message classes (runtime dep, ~200KB).
+- `protobuf>=5` — transitive above; pin explicitly.
 
-demo / dev 用：`opentelemetry-api`、`opentelemetry-sdk`、`opentelemetry-exporter-otlp-proto-http`、`litellm`、`aiosqlite`（测试 fixture）。
+Demo / dev: `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, `litellm`, `aiosqlite` (test fixture).
 
-主依赖只新增 `opentelemetry-proto` + `protobuf`（加起来不到 2MB）；OTel SDK / LiteLLM 进 `dev` 依赖组，避免污染线上镜像（demo app 是 example，不是生产路径）。
+Main deps add only `opentelemetry-proto` + `protobuf` (under 2MB together); OTel SDK / LiteLLM go in the `dev` group so they do not pollute the production image (the demo app is an example, not a production path).
 
-## 测试策略
+## Test strategy
 
-所有 DB-touching 测试用 in-memory aiosqlite engine fixture + `dependency_override` `get_session`，靠 `Base.metadata.create_all` 绕过 alembic（SQLite 不支持 JSONB，但 `JsonType` 已做 fallback），覆盖 protobuf / OTLP-JSON 两路 ingest、list 排序与 detail span 数。
+All DB-touching tests use an in-memory aiosqlite engine fixture + `dependency_override` of `get_session`, with `Base.metadata.create_all` to skip Alembic (SQLite has no JSONB, but `JsonType` already falls back). Coverage: protobuf and OTLP-JSON ingest, list sort order, and detail span counts.
 
-## 技术选型与抉择
+## Technical choices
 
-### 1. protobuf 与 OTLP-JSON 双 content-type 都收，汇流单一 walker
+### 1. Accept both protobuf and OTLP-JSON; converge on one walker
 
-- **备选**：只支持一种编码（如只收 protobuf）。
-- **选择**：两种 content-type 都解析，但解析后立刻汇流到同一个 `map_otel_span` walker。
-- **代价/收益**：兼容标准 OTel SDK（默认 protobuf）与手写 / 调试场景（JSON 更可读），符合 ADR-001"拥抱 OTel 标准、降低应用方接入门槛"。代价是多一条 JSON envelope 解析路径，但两路共用 mapper，增量极小。
+- **Alternative**: support one encoding only (e.g. protobuf only).
+- **Choice**: parse both content-types, then immediately converge on the same `map_otel_span` walker.
+- **Trade-off**: compatible with the standard OTel SDK (protobuf by default) and handwritten / debug paths (JSON is more readable), matching ADR-001 "embrace OTel, lower the app integration bar." The cost is a second JSON-envelope parse path; both share the mapper, so the increment is tiny.
 
-### 2. 写库幂等：`INSERT ... ON CONFLICT`（ADR-002）
+### 2. Idempotent writes: `INSERT ... ON CONFLICT` (ADR-002)
 
-- **备选**：先 `SELECT` 查重再决定 insert/update，或不防重直接插。
-- **选择**：span 用 `ON CONFLICT (span_id) DO NOTHING`、trace 用 `ON CONFLICT (trace_id) DO UPDATE`，方言间用 SQLAlchemy 抽象统一（PG / SQLite 各走各的 dialect insert）。
-- **代价/收益**：OTLP 的 `BatchSpanProcessor` 会重推、同一 trace 也可能分批到达，幂等保证"重推不重复计数 / 时间窗正确合并"，且一条 SQL 完成、无 select-then-write 竞态。代价是依赖各方言的 upsert 语法，但已封装在持久化层。
+- **Alternative**: `SELECT` then insert/update, or insert without dedup.
+- **Choice**: spans `ON CONFLICT (span_id) DO NOTHING`, traces `ON CONFLICT (trace_id) DO UPDATE`, unified via SQLAlchemy (PG / SQLite each use their dialect insert).
+- **Trade-off**: OTLP `BatchSpanProcessor` retries, and one trace may arrive in batches. Idempotency guarantees "retries do not double-count / time windows merge correctly," in one SQL statement, with no select-then-write race. The cost is dialect upsert syntax, already wrapped in the persistence layer.
 
-### 3. 单独抽 `persistence.py` 持久化层
+### 3. Extract a `persistence.py` layer
 
-- **备选**：写库逻辑直接写在两个 router 里。
-- **选择**：抽出 `persist_spans`，OTLP endpoint 与简化 `POST /v1/traces` 共用。
-- **代价/收益**：消除两个入口写库逻辑漂移的风险，是单一职责的体现；代价是多一个模块，但换来后续任何 ingest 入口都复用同一份幂等写库代码。
+- **Alternative**: write logic inlined in both routers.
+- **Choice**: extract `persist_spans`, shared by the OTLP endpoint and simplified `POST /v1/traces`.
+- **Trade-off**: no drift between the two ingest write paths (single responsibility). Extra module, but any future ingest entrypoint reuses the same idempotent write code.
 
-### 4. `traces` 汇总表 + 单列时间索引，先不上 GIN / 维表（ADR-002）
+### 4. `traces` summary table + a single time index; no GIN / dimension table yet (ADR-002)
 
-- **备选**：列表查询直接在 `spans` 上 `DISTINCT`；或一开始就抽 `services` 维表、给 attributes 上 GIN 索引。
-- **选择**：加一张 `traces` 汇总表缓存 root span / 时间窗 / span 数，列表只配 `ix_traces_start_time DESC` 单列索引；resource_attributes 接受按 trace 冗余存。
-- **代价/收益**：列表 / 翻页查询从"扫 spans"降到"扫汇总表"，单列索引足够支撑当前量级。冗余 resource_attributes（一行 trace 才几 KB）和延后 GIN 索引，符合 ADR-002"够用就行、到百万量级再优化"的原则——避免过早抽维表带来的 join 复杂度。
+- **Alternative**: list via `DISTINCT` on `spans`; or extract a `services` dimension table and GIN-index attributes from day one.
+- **Choice**: a `traces` summary table caching root span / time window / span count; list uses only `ix_traces_start_time DESC`; resource_attributes are stored redundantly per trace.
+- **Trade-off**: list / pagination goes from "scan spans" to "scan the summary table"; a single-column index is enough at current scale. Redundant resource_attributes (a few KB per trace) and deferred GIN match ADR-002 "good enough until millions of rows"—avoid premature dimension tables and join complexity.

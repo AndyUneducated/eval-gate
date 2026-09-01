@@ -1,113 +1,113 @@
-# Phase 13 · Shadow Mode（影子模式：生产流量上并发跑候选但不返回给用户）
+# Phase 13 · Shadow Mode (run the candidate concurrently on production traffic without returning it to the user)
 
-## 核心思路
+## Core idea
 
-生产应用想验证一份新 prompt/模型（candidate），又不敢直接让它面对真实用户。Shadow Mode（影子模式，在真实生产流量上**并发**跑候选，结果只用于评测、不返回给用户）解决这个问题：
+A production app wants to validate a new prompt/model (candidate) without putting it in front of real users. Shadow Mode solves this: on real production traffic, **concurrently** run the candidate; results are for eval only and are not returned to the user.
 
 ```python
 from evalgate.shadow import shadow
 answer = await shadow(case_input, primary=primary_spec, candidate=candidate_spec)
 ```
 
-`shadow(...)` 包住主调用：primary 正常返回给用户；按 `sample_rate` 命中采样时，**后台并发**跑 candidate，用同一套 judge 给两边打 reference-free（无参考答案的评分）分数，打包成两条 `EvalRecord`，再 fire-and-forget（发后不管的异步调用，1s 超时即丢）推到后端。后端按 candidate 的 prompt hash 聚合，滚动窗口直接复用 PR gate 的四轴判定；任一轴显著变差就发 webhook 报警。
+`shadow(...)` wraps the primary call: primary returns to the user as usual; when `sample_rate` hits, the candidate runs **in the background concurrently**, both sides are scored with the same judge (reference-free), packed into two `EvalRecord`s, and fire-and-forget pushed to the backend (1s timeout then drop). The backend aggregates by the candidate's prompt hash; a rolling window reuses the PR gate's four-axis decision; a significant worsening on any axis fires a webhook alert.
 
-> 用户接入只要上面这 3 行，完整使用文档见 [SHADOW.md](./SHADOW.md)。
+> Callers only need the 3 lines above; full usage is in [SHADOW.md](./SHADOW.md).
 
-## 端到端时序
+## End-to-end sequence
 
-shadow 调用对生产主路径**零阻塞**：primary 一返回，调用方就拿到结果，candidate 的跑分/上报全在后台 task 里，慢或挂都不影响用户。
+A shadow call is **zero-blocking** on the production hot path: as soon as primary returns, the caller has the result. Candidate scoring/reporting lives in a background task; slowness or hangs never affect the user.
 
 ```mermaid
 sequenceDiagram
-  participant App as "生产应用"
+  participant App as "production app"
   participant SH as "shadow() wrapper"
-  participant BG as "asyncio 后台 task"
+  participant BG as "asyncio background task"
   participant J as "build_judge_stack(primary)"
   participant API as "POST /v1/shadow/observe"
   participant DB as "shadow_observations"
 
   App->>SH: await shadow(input, primary, candidate)
   SH->>SH: run_candidate(primary)
-  SH-->>App: return primary text（用户立即拿到）
-  Note over SH,BG: random() < sample_rate 才采样
-  SH->>BG: asyncio.create_task（fire-and-forget）
+  SH-->>App: return primary text (user gets it immediately)
+  Note over SH,BG: sample only if random() < sample_rate
+  SH->>BG: asyncio.create_task (fire-and-forget)
   BG->>BG: run_candidate(candidate)
-  BG->>J: 同一 rubric 给 primary / candidate 打分
-  J-->>BG: 两条 EvalRecord
-  BG->>API: ShadowClient.observe（1s 超时，吞掉所有异常）
-  API->>DB: 写入 observation（返回 202）
+  BG->>J: same rubric scores primary / candidate
+  J-->>BG: two EvalRecords
+  BG->>API: ShadowClient.observe (1s timeout, swallow all exceptions)
+  API->>DB: write observation (return 202)
 ```
 
-按需触发的汇总与报警是另一条独立链路（on-demand，不依赖任何常驻定时器）：
+On-demand rollup and alerting is a separate independent path (on-demand, no resident timer):
 
 ```mermaid
 flowchart LR
-  DB[("shadow_observations")] --> Rollup["run_rollup<br/>按 candidate_prompt_hash 取一窗"]
-  Rollup --> Split["拆成 primary[] -> baseline<br/>candidate[] -> candidate"]
-  Split --> Gate["build_gate_report<br/>(复用 PR gate 四轴)"]
-  Gate --> Rep[("shadow_reports 快照<br/>（rollup：汇总落库的快照）")]
-  Gate -->|"任一轴显著回归"| Alert["maybe_alert -> Slack 兼容 webhook"]
-  Note["GET /v1/shadow/reports 实时算窗口、不落库<br/>POST /v1/shadow/rollup 才落快照 + 报警"]
+  DB[("shadow_observations")] --> Rollup["run_rollup<br/>one window by candidate_prompt_hash"]
+  Rollup --> Split["split primary[] -> baseline<br/>candidate[] -> candidate"]
+  Split --> Gate["build_gate_report<br/>(reuse PR gate four axes)"]
+  Gate --> Rep[("shadow_reports snapshot<br/>(rollup: persisted snapshot)")]
+  Gate -->|"significant regression on any axis"| Alert["maybe_alert -> Slack-compatible webhook"]
+  Note["GET /v1/shadow/reports computes the window live, does not persist<br/>POST /v1/shadow/rollup persists the snapshot + alerts"]
 ```
 
-`cost` 轴是 lower-is-better，candidate 贵 20% → 显著 → fail，这是 demo 故意制造的回归信号。
+The `cost` axis is lower-is-better; a candidate 20% more expensive → significant → fail. That is a regression signal the demo plants on purpose.
 
-## 技术选型与抉择
+## Technical choices
 
-> 取舍来源：ADR-010（SDK 侧打分 + on-demand rollup，不引入 scheduler）。
+> Trade-offs from ADR-010 (score on the SDK client + on-demand rollup, no scheduler).
 
-### 谁来打分：SDK 客户端侧 vs 后端 worker
+### Who scores: SDK client vs backend worker
 
-shadow 没有人工 ground truth，primary / candidate 都得先有一个 reference-free judge 分才能变成 `EvalRecord`。
+Shadow has no human ground truth; both primary and candidate need a reference-free judge score before they can become `EvalRecord`s.
 
-- **选定：SDK 客户端侧打分。** 复用 `build_judge_stack(primary)` 给两边用**同一 rubric**打分（同一把尺子才公平）。SDK 已为跑 candidate 持有 `PromptSpec` 和 LiteLLM 通道，就地打分省掉"把两段输出回传后端、后端再起 judge worker"的往返。
-- **代价：** judge 的 token 成本/延迟落在调用方进程——但都在后台 task 里，不阻塞主路径。candidate 若想用更严的 rubric，需要显式扩展。
-- **收益：** 后端退化成**纯写 + 聚合**的薄层。observe 的 payload 正好是早已固化的 `EvalRecord` 契约，后端无需理解 prompt 配置。
+- **Choice: score on the SDK client.** Reuse `build_judge_stack(primary)` so both sides are scored with the **same rubric** (same ruler is the only fair comparison). The SDK already holds `PromptSpec` and the LiteLLM channel to run the candidate; scoring in place avoids round-tripping both outputs to a backend judge worker.
+- **Cost:** judge token cost/latency lands in the caller process—but all in a background task, not on the hot path. A stricter rubric for the candidate would need an explicit extension.
+- **Gain:** the backend shrinks to a thin **write + aggregate** layer. The observe payload is the already-frozen `EvalRecord` contract; the backend need not understand prompt config.
 
-### 滚动报告：内置 scheduler vs on-demand rollup
+### Rolling reports: built-in scheduler vs on-demand rollup
 
-"每小时滚动算一次四轴 + 报警"这种周期任务，要不要在服务里塞定时器/常驻 worker？
+Should a periodic "hourly four-axis + alert" job live as a timer / resident worker in the service?
 
-- **选定：on-demand + 显式 rollup。** `GET /v1/shadow/reports` 实时算窗口内四轴（不落库）；`POST /v1/shadow/rollup`（及 `evalgate shadow rollup` CLI）才落一份 `shadow_reports` 快照并触发报警。生产用 cron 调这个幂等 CLI。
-- **为什么不引 APScheduler / 常驻 task：** 对 1 人天的 phase 是过度工程；cron 调幂等 CLI 更贴合"git-native / 配置外置"的项目调性，且 `compute_shadow_report` 是纯函数、易测。
-- **代价：** "多久滚一次"成了部署方的运维选择，报警延迟 = rollup 周期，服务不保证实时。
+- **Choice: on-demand + explicit rollup.** `GET /v1/shadow/reports` computes four axes for the live window (no persist); `POST /v1/shadow/rollup` (and `evalgate shadow rollup` CLI) persists a `shadow_reports` snapshot and fires alerts. Production calls this idempotent CLI from cron.
+- **Why not APScheduler / a resident task:** over-engineering for a 1-person-day phase; cron + an idempotent CLI matches the project's git-native / config-outside-the-app tone, and `compute_shadow_report` is a pure function, easy to test.
+- **Cost:** "how often to roll" is an ops choice for the deployer; alert latency = rollup period; the service does not guarantee real-time.
 
-### 聚合：复用 PR gate vs 另写一套统计
+### Aggregation: reuse the PR gate vs a second stats stack
 
-- **选定：复用 `gate.decision.build_gate_report`。** `compute_shadow_report` 把一窗 observation 拆成 `primary_record[]`→baseline、`candidate_record[]`→candidate，原样喂 gate。于是 shadow 与 PR CI **共用一套**四轴 + bootstrap CI（自助法置信区间）+ tag 归因 + `axis_breakdown` 子轴定义，零新统计代码。
+- **Choice: reuse `gate.decision.build_gate_report`.** `compute_shadow_report` splits one window of observations into `primary_record[]`→baseline and `candidate_record[]`→candidate, then feeds the gate as-is. Shadow and PR CI **share** four axes + bootstrap CI + tag attribution + `axis_breakdown` sub-axis definitions—zero new statistics code.
 
-### 主路径保护：fire-and-forget 的工程细节
+### Hot-path protection: fire-and-forget engineering details
 
-- 采样命中时 `asyncio.create_task` 起后台任务，调用方**永不 await**；HTTP 推送 1s 硬超时且**吞掉所有异常**（`ShadowClient.observe` / `_shadow_eval_and_push` 双层 try）。EvalGate 慢或挂都不能拖慢/打断生产请求——这是 shadow 敢上生产的前提。
-- 后台 task 强引用存进模块级 `_BACKGROUND_TASKS`（asyncio 只持弱引用，否则可能被 GC），`drain_background_tasks()` 供测试/优雅关停排空。这是 fire-and-forget 的已知坑，已封装。
+- On a sample hit, `asyncio.create_task` starts a background task; the caller **never awaits**. HTTP push has a 1s hard timeout and **swallows every exception** (double try in `ShadowClient.observe` / `_shadow_eval_and_push`). EvalGate being slow or down must not slow or break production requests—that is the precondition for putting shadow in production.
+- Background tasks are held by a strong module-level `_BACKGROUND_TASKS` (asyncio only holds weak refs, otherwise GC can drop them). `drain_background_tasks()` is for tests / graceful shutdown. This is a known fire-and-forget pitfall, already encapsulated.
 
-### 其余约定
+### Other conventions
 
-- **分组键 `candidate_prompt_hash`：** `spec_hash(spec)` = PromptSpec canonical JSON 的 sha256，字节相同的配置塌缩成同一条 shadow 流（内容寻址）。
-- **报警可降级：** POST 一个 `{"text": …}`（Slack incoming-webhook 形状，多数通用 receiver 也吃），不引入 Slack SDK；无 `EVALGATE_SHADOW_WEBHOOK_URL` 时降级为 structlog warning，本地/CI 无需外部端点。
-- **时间窗口跨方言鲁棒：** SQLite 存 naive、PG 存 aware；rollup 在 Python 里 `_as_aware` 归一后再按窗口过滤，不依赖 DB 端 datetime 比较语义。
+- **Grouping key `candidate_prompt_hash`:** `spec_hash(spec)` = sha256 of PromptSpec canonical JSON; byte-identical configs collapse into one shadow stream (content-addressed).
+- **Alerts can degrade:** POST a `{"text": …}` (Slack incoming-webhook shape; most generic receivers accept it too), no Slack SDK. With no `EVALGATE_SHADOW_WEBHOOK_URL`, degrade to a structlog warning so local/CI need no external endpoint.
+- **Time windows robust across dialects:** SQLite stores naive, PG stores aware; rollup normalizes with `_as_aware` in Python then filters by window, without depending on DB datetime comparison semantics.
 
-## 关键代码
+## Key code
 
 - [src/evalgate/shadow/](../src/evalgate/shadow/)
-  - [`sdk.py`](../src/evalgate/shadow/sdk.py) — `shadow(...)` 包装 + `ShadowClient`（fire-and-forget / 1s 超时）+ `spec_hash` + `_BACKGROUND_TASKS` / `drain_background_tasks`
-  - [`persistence.py`](../src/evalgate/shadow/persistence.py) — observation / report 的增查（dialect-agnostic）
-  - [`rollup.py`](../src/evalgate/shadow/rollup.py) — `compute_shadow_report`（纯函数）/ `compute_live_report`（加窗口）/ `run_rollup`（落快照 + 报警，可注入 `alerter`）
-  - [`alert.py`](../src/evalgate/shadow/alert.py) — `format_alert` / `send_alert` / `maybe_alert`（Slack 兼容 + 无 webhook 降级）
-- [src/evalgate/api/routers/shadow.py](../src/evalgate/api/routers/shadow.py) — `POST /v1/shadow/observe`（202）/ `GET /v1/shadow/reports` / `POST /v1/shadow/rollup`
+  - [`sdk.py`](../src/evalgate/shadow/sdk.py) — `shadow(...)` wrapper + `ShadowClient` (fire-and-forget / 1s timeout) + `spec_hash` + `_BACKGROUND_TASKS` / `drain_background_tasks`
+  - [`persistence.py`](../src/evalgate/shadow/persistence.py) — observation / report insert+query (dialect-agnostic)
+  - [`rollup.py`](../src/evalgate/shadow/rollup.py) — `compute_shadow_report` (pure) / `compute_live_report` (windowed) / `run_rollup` (persist snapshot + alert, injectable `alerter`)
+  - [`alert.py`](../src/evalgate/shadow/alert.py) — `format_alert` / `send_alert` / `maybe_alert` (Slack-compatible + no-webhook degrade)
+- [src/evalgate/api/routers/shadow.py](../src/evalgate/api/routers/shadow.py) — `POST /v1/shadow/observe` (202) / `GET /v1/shadow/reports` / `POST /v1/shadow/rollup`
 - [src/evalgate/db/models.py](../src/evalgate/db/models.py) — `ShadowObservationRow` / `ShadowReportRow`
-- [src/evalgate/core/schemas.py](../src/evalgate/core/schemas.py) — `ShadowObserveRequest` / `ShadowReportOut`（observe 的 `EvalRecord` 契约）
+- [src/evalgate/core/schemas.py](../src/evalgate/core/schemas.py) — `ShadowObserveRequest` / `ShadowReportOut` (observe `EvalRecord` contract)
 
-测试策略：以纯函数（`compute_shadow_report`）+ 确定性 RNG 覆盖采样命中/不命中、cost 回归判定、fire-and-forget 吞异常与降级路径，端到端用离线 1k 流量 smoke 串起来。
+Test strategy: cover sample hit/miss, cost-regression decisions, fire-and-forget exception swallowing, and degrade paths with pure functions (`compute_shadow_report`) + a deterministic RNG; stitch end-to-end with an offline 1k-traffic smoke.
 
-## 运维与体验
+## Ops and UX
 
 ```bash
-# 离线端到端：1k 流量 -> 滚动四轴 report -> cost 回归 -> 报警
+# offline e2e: 1k traffic -> rolling four-axis report -> cost regression -> alert
 make shadow-smoke
 
-# 运维侧：对某个 candidate prompt hash 滚动出报告（落快照 + 报警），生产用 cron 调
+# ops: roll a report for a candidate prompt hash (persist snapshot + alert); production calls from cron
 evalgate shadow rollup --candidate-hash <hash> --window-hours 24
-# 只看不落库
+# view only, do not persist
 evalgate shadow report --candidate-hash <hash>
 ```

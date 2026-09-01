@@ -1,22 +1,22 @@
-# Phase 2 · 多轴 CI Gate（bootstrap CI + tag 归因）
+# Phase 2 · Multi-axis CI Gate (bootstrap CI + tag attribution)
 
-> 这是 EvalGate 的"质检岗"内核：把两份评测结果聚成多轴 metric，用统计显著性判定回归真伪，再归因到具体 case 簇，最终产出能阻塞 PR merge 的裁决。
+> This is EvalGate's quality-gate kernel: aggregate two eval result sets into multi-axis metrics, use statistical significance to tell real regressions from noise, attribute the drop to case clusters, and emit a verdict that can block a PR merge.
 
-## 核心思路
+## Core idea
 
-给定 baseline / candidate 两份 per-case 评测 JSON，把它们聚成 **quality / cost / latency_p95 / safety 四轴 metric**，每轴用同一套 bootstrap CI（自助重采样置信区间）判"这个 delta 是真回归还是噪声"，再按 tag 归因出"哪一类 case 拖垮了"，最后拼成 `GateReport`——pass/fail 决定 PR 能不能 merge。
+Given baseline and candidate per-case eval JSON, aggregate them into **four-axis metrics: quality / cost / latency_p95 / safety**. Each axis uses the same bootstrap CI (bootstrap resampling confidence interval) to decide whether a delta is a real regression or noise, then tag attribution answers "which class of cases dragged us down," and the pieces assemble into a `GateReport`—pass/fail decides whether the PR can merge.
 
-## 数据流总览
+## Data-flow overview
 
 ```mermaid
 flowchart LR
   BJSON["baseline.json"]
   CJSON["candidate.json"]
-  Axes["multi_axis.build_axis_metrics<br/>(4 轴 + bootstrap diff CI)"]
-  Attr["attribution.tagwise_attribution<br/>(按 tag 归因)"]
+  Axes["multi_axis.build_axis_metrics<br/>(4 axes + bootstrap diff CI)"]
+  Attr["attribution.tagwise_attribution<br/>(tag attribution)"]
   Report["decision.build_gate_report<br/>(GateReport)"]
-  CLI["evalgate gate<br/>(退出码即裁决)"]
-  GH["eval-gate.yml<br/>(评论 PR + 阻塞 merge)"]
+  CLI["evalgate gate<br/>(exit code is the verdict)"]
+  GH["eval-gate.yml<br/>(comment on PR + block merge)"]
 
   BJSON --> Axes
   CJSON --> Axes
@@ -25,81 +25,81 @@ flowchart LR
   CLI --> Report --> GH
 ```
 
-三层职责分离，是这套设计能复用的关键：
+Three-layer separation is what makes this design reusable:
 
 ```mermaid
 flowchart TB
   Records["list[EvalRecord]<br/>(case_id / tags / score / cost_usd / latency_ms)"]
-  subgraph report["report/ 统计层"]
+  subgraph report["report/ stats layer"]
     Sig["significance.py<br/>(bootstrap_diff_ci)"]
-    Multi["multi_axis.py<br/>(AxisSpec 驱动 4 轴)"]
+    Multi["multi_axis.py<br/>(AxisSpec drives 4 axes)"]
     Attribution["attribution.py<br/>(tagwise_attribution)"]
   end
-  subgraph gate["gate/ 组装层"]
+  subgraph gate["gate/ assembly layer"]
     Decision["decision.py<br/>(build_gate_report)"]
   end
 
-  Records --> Multi --> |每轴调用| Sig
+  Records --> Multi --> |per-axis call| Sig
   Records --> Attribution
   Multi --> Decision
   Attribution --> Decision
   Decision --> GateReport["GateReport<br/>(passed / axes / attribution / summary)"]
 ```
 
-## 1. 显著性引擎：`report/significance.py`
+## 1. Significance engine: `report/significance.py`
 
-stochastic eval（随机性评测）的核心问题——小而抖的 eval set 上，candidate 比 baseline 低 0.5% 到底是真回归还是采样噪声？用 **bootstrap diff CI** 回答：
+The core problem of stochastic eval: on a small, noisy eval set, is a 0.5% drop of candidate vs baseline a real regression or sampling noise? **Bootstrap diff CI** answers that:
 
-- `bootstrap_diff_ci(baseline, candidate, statistic="mean", n_resamples=1000, confidence=0.95, seed=42)`：对两个数组各自有放回重采样 1000 次，算 `statistic(candidate) - statistic(baseline)` 的分布，取 95% 分位区间。
-- `significant = (ci_low > 0 or ci_high < 0)`——**CI 不跨 0 才算显著**。
-- `statistic` 可插拔（`STATISTICS = {"mean": ..., "p95": ...}`，向量化按 `axis=1` reduce），让 mean 类轴（quality/cost）和 tail 类轴（latency p95）走**同一套**判定机器，而不是给 p95 单独写阈值特判。
-- `seed` 固定 → CI 上确定性可复现。
+- `bootstrap_diff_ci(baseline, candidate, statistic="mean", n_resamples=1000, confidence=0.95, seed=42)`: resample each array with replacement 1000 times, form the distribution of `statistic(candidate) - statistic(baseline)`, and take the 95% percentile interval.
+- `significant = (ci_low > 0 or ci_high < 0)`—**significant only if the CI does not cross 0**.
+- `statistic` is pluggable (`STATISTICS = {"mean": ..., "p95": ...}`, vectorized reduce on `axis=1`), so mean-style axes (quality/cost) and tail-style axes (latency p95) share **the same** decision machinery instead of a one-off p95 threshold.
+- Fixed `seed` → deterministic, reproducible CIs.
 
-## 2. 多轴聚合：`report/multi_axis.py`
+## 2. Multi-axis aggregation: `report/multi_axis.py`
 
-`build_axis_metrics(baseline, candidate) -> list[AxisMetric]`，由声明式 `AxisSpec`（`name` / `direction` / `extractor` / `aggregator`）驱动：
+`build_axis_metrics(baseline, candidate) -> list[AxisMetric]`, driven by declarative `AxisSpec` (`name` / `direction` / `extractor` / `aggregator`):
 
-| 轴 | 方向 | extractor | 聚合 |
+| Axis | Direction | extractor | Aggregation |
 | --- | --- | --- | --- |
 | quality | higher_is_better | `score` | mean |
 | cost | lower_is_better | `cost_usd` | mean |
 | latency_p95 | lower_is_better | `latency_ms` | p95 |
-| safety | lower_is_better | （breakdown-only，无标量） | — |
+| safety | lower_is_better | (breakdown-only, no scalar) | — |
 
-- 每轴算 `baseline_agg` / `candidate_agg` / `delta`，调 `bootstrap_diff_ci` 拿 CI + significant。
-- **回归判定** `_is_regression`：必须同时满足 (a) 坏方向 + (b) 统计显著 + (c)（若设了容差带）超过 `rel_tolerance * |baseline|`——三者缺一不判 fail，避免噪声尾延迟把 gate 跳掉。
-- 输出 `AxisMetric`（`name/baseline/candidate/delta/ci_low/ci_high/significant/passed`）。
+- Each axis computes `baseline_agg` / `candidate_agg` / `delta`, then calls `bootstrap_diff_ci` for CI + significant.
+- **Regression test** `_is_regression`: all of (a) worse direction, (b) statistically significant, and (c) (if a tolerance band is set) beyond `rel_tolerance * |baseline|` must hold—any miss means no fail, so noisy tail latency does not trip the gate.
+- Output is `AxisMetric` (`name/baseline/candidate/delta/ci_low/ci_high/significant/passed`).
 
-## 3. tag 归因：`report/attribution.py`
+## 3. Tag attribution: `report/attribution.py`
 
-整体 pass-rate 掉只是"报警"，归因把它变成"根因"。`tagwise_attribution(baseline, candidate)`：
+A drop in overall pass-rate is only an alarm; attribution turns it into a root cause. `tagwise_attribution(baseline, candidate)`:
 
-- 收集两边所有 record 的 `tags`，对每个 tag 算 baseline/candidate 的 mean score + `delta` + `n_baseline`/`n_candidate`。
-- 输出 `{tag: {baseline, candidate, delta, n_baseline, n_candidate}}`——让报告能说"billing 意图掉了 8 个点"而不是"整体 pass rate 掉 0.5%"。
+- Collect `tags` from records on both sides; for each tag compute baseline/candidate mean score + `delta` + `n_baseline`/`n_candidate`.
+- Output `{tag: {baseline, candidate, delta, n_baseline, n_candidate}}` so the report can say "billing intent dropped 8 points" instead of "overall pass rate dropped 0.5%".
 
-## 4. 报告组装：`gate/decision.py`
+## 4. Report assembly: `gate/decision.py`
 
-`build_gate_report(baseline, candidate) -> GateReport`：
+`build_gate_report(baseline, candidate) -> GateReport`:
 
-- 调 `build_axis_metrics` + `tagwise_attribution`。
-- `passed = all(axis.passed for axis in axes)`。
-- `_summarize`：pass 时输出 "All axes within tolerance."；fail 时点名 regressed 轴 + 最差 tag。
+- Calls `build_axis_metrics` + `tagwise_attribution`.
+- `passed = all(axis.passed for axis in axes)`.
+- `_summarize`: on pass, "All axes within tolerance."; on fail, name the regressed axes + worst tag.
 
-三层分离（`multi_axis` 算轴 / `attribution` 归因 / `decision` 组装）的核心目的：**数据源可替换而 gate 逻辑不动**——后续真 judge 接入时只换数据源（fixtures → judge 输出），gate 逻辑一行不改。
+The three-way split (`multi_axis` computes axes / `attribution` attributes / `decision` assembles) exists so **the data source can be swapped without touching gate logic**—when a real judge is wired in, only the source changes (fixtures → judge output); the gate logic is unchanged.
 
-契约固化在 `core/schemas.py`：`EvalRecord`（`case_id` / `tags` / `score` / `cost_usd` / `latency_ms`，`extra="allow"`）、`AxisMetric`、`GateReport`（`passed` / `axes` / `attribution` / `summary`）。`EvalRecord` 的字段名是**公开契约**——gate extractor 直接读这些 key，后续 shadow `/v1/shadow/observe` 也复用同一 shape。
+The contract lives in `core/schemas.py`: `EvalRecord` (`case_id` / `tags` / `score` / `cost_usd` / `latency_ms`, `extra="allow"`), `AxisMetric`, `GateReport` (`passed` / `axes` / `attribution` / `summary`). `EvalRecord` field names are a **public contract**—gate extractors read these keys directly; later shadow `/v1/shadow/observe` reuses the same shape.
 
-## 5. CLI：`evalgate gate`
+## 5. CLI: `evalgate gate`
 
 ```bash
 evalgate gate --baseline baseline.json --candidate candidate.json [--out report.json]
 ```
 
-- 读两份 `list[EvalRecord]`-shape JSON → `build_gate_report` → 打印 4 轴报告 + 归因表 → `--out` 写 JSON。
-- **退出码即裁决**：pass → 0，fail → 非 0（CI 直接 enforce / 阻塞 merge）。
-- 直连文件、零 HTTP / DB 依赖，CI 里好跑。
+- Read two `list[EvalRecord]`-shape JSON files → `build_gate_report` → print the 4-axis report + attribution table → `--out` writes JSON.
+- **Exit code is the verdict**: pass → 0, fail → non-zero (CI can enforce / block merge).
+- Talks to files only; zero HTTP / DB dependency; easy to run in CI.
 
-## 6. CI 集成：`.github/workflows/eval-gate.yml`
+## 6. CI integration: `.github/workflows/eval-gate.yml`
 
 ```mermaid
 sequenceDiagram
@@ -108,39 +108,39 @@ sequenceDiagram
   participant Gate as evalgate gate
   participant GH as github-script
 
-  PR->>CI: 触发
-  CI->>Gate: 跑评测数据 -> gate
-  Gate-->>CI: GateReport + 退出码
-  CI->>GH: 4 轴报告 + tag 归因表
-  GH-->>PR: 自动评论 PASS/FAIL
-  Note over CI,PR: 退出码非 0 -> workflow 失败 -> 阻塞 merge
+  PR->>CI: trigger
+  CI->>Gate: run eval data -> gate
+  Gate-->>CI: GateReport + exit code
+  CI->>GH: 4-axis report + tag attribution table
+  GH-->>PR: auto-comment PASS/FAIL
+  Note over CI,PR: non-zero exit -> workflow fails -> merge blocked
 ```
 
-- PR 触发 → 生成评测数据 → `evalgate gate` → 上传 report artifact。
-- 用 `actions/github-script@v7` 把 4 轴报告 + tag 归因表 + 整体 PASS/FAIL **自动评论到 PR**。
-- gate fail（退出码非 0）→ workflow 失败 → **阻塞 merge**。
+- PR trigger → generate eval data → `evalgate gate` → upload report artifact.
+- `actions/github-script@v7` **auto-comments the PR** with the 4-axis report + tag attribution table + overall PASS/FAIL.
+- Gate fail (non-zero exit) → workflow fails → **merge is blocked**.
 
-## 技术选型与抉择
+## Technical choices
 
-### 1. 四轴 + 显著性 + 归因，而非单 pass-rate gate（ADR-004）
+### 1. Four axes + significance + attribution, not a single pass-rate gate (ADR-004)
 
-- **备选**：市面 OSS eval 工具的默认形态——"pass rate 跌破阈值 → fail"。
-- **选择**：CI gate 必备三件套——多轴（quality / cost / latency_p95 / safety 并联，任一 regress 即 fail）、统计显著性（bootstrap CI 判真伪）、tag 归因（指出哪簇 case 集体跌）。
-- **代价/收益**：单 pass-rate gate 有三个致命坑——**漏判**（pass rate 不变但 cost 翻倍 / p95 涨 2 倍 / safety 恶化）、**误 block**（92%→89% 可能只是噪声，误 block 一次大家就 `--force` 跳过 gate，整个系统作废）、**不可解释**（"跌了 3%"是 alarm 不是 root cause）。三件套分别堵这三个坑：漏判靠多轴、误 block 靠显著性、不可解释靠归因。代价是 tag 维护成本下放给应用方，以及 gate 实现复杂度上升。
+- **Alternative**: the default OSS eval shape—"pass rate below a threshold → fail".
+- **Choice**: a CI gate needs three pieces—multi-axis (quality / cost / latency_p95 / safety in parallel; any regression fails), statistical significance (bootstrap CI for true vs noise), and tag attribution (which cluster of cases dropped together).
+- **Trade-off**: a single pass-rate gate has three fatal holes—**missed regressions** (pass rate unchanged but cost doubles / p95 doubles / safety worsens), **false blocks** (92%→89% may be noise; one false block and people `--force` past the gate, and the system is dead), **uninterpretable** ("dropped 3%" is an alarm, not a root cause). The three pieces close those holes: multi-axis for misses, significance for false blocks, attribution for interpretability. The cost is tag-maintenance burden on the app side, plus more gate complexity.
 
-### 2. bootstrap CI，而非 paired t-test
+### 2. Bootstrap CI, not a paired t-test
 
-- **备选**：配对 t 检验——经典、计算更省。
-- **选择**：bootstrap（自助法）有放回重采样 1000 次估 delta 的置信区间。
-- **代价/收益**：eval 分数经常非正态（双峰或截断），bootstrap 对分布形状不敏感，比 t-test 更稳。计算量是 `O(N × resamples)`，几百条 case × 1000 重采样在毫秒级，相比 judge 调用本身可忽略。代价是小 N（如 N=3 的 demo 体量）下显著性判定本身方差大——这是已知局限，足量 N 的正式复现实验留待专门的复盘 phase。
+- **Alternative**: paired t-test—classic, cheaper to compute.
+- **Choice**: bootstrap with-replacement resampling 1000 times to estimate a CI on the delta.
+- **Trade-off**: eval scores are often non-normal (bimodal or truncated); bootstrap is insensitive to distribution shape and more stable than a t-test. Cost is `O(N × resamples)`; a few hundred cases × 1000 resamples is milliseconds, negligible vs judge calls. Small N (e.g. N=3 demos) makes the significance call itself high-variance—a known limit; a full-N reproduction experiment is left for a dedicated recap phase.
 
-### 3. 同一套统计机器跑所有轴（statistic 可插拔）
+### 3. One statistical machine for every axis (pluggable `statistic`)
 
-- **备选**：mean 类轴用 bootstrap、p95 类轴单独写阈值特判。
-- **选择**：把 `statistic` 做成可插拔（`mean` / `p95`），所有轴共用 `bootstrap_diff_ci`。
-- **代价/收益**：统一判定逻辑、减少特判分支，新增轴只需声明 `AxisSpec`。早期 latency p95 轴曾先用阈值兜底（重采样的 p95 解释较微妙，属当时的已知技术债，ADR-004 记录在案），后续已接上 `statistic="p95"` 的 bootstrap CI + 相对容差带（`LATENCY_REL_TOLERANCE`）消化该债。
+- **Alternative**: bootstrap for mean-style axes, a one-off threshold for p95-style axes.
+- **Choice**: make `statistic` pluggable (`mean` / `p95`); every axis shares `bootstrap_diff_ci`.
+- **Trade-off**: unified decision logic, fewer special cases; a new axis is just an `AxisSpec`. Early latency p95 used a threshold fallback (resampled p95 is subtle to interpret—known tech debt, recorded in ADR-004); it later landed `statistic="p95"` bootstrap CI + a relative tolerance band (`LATENCY_REL_TOLERANCE`).
 
-### 4. 三层分离让数据源与 gate 逻辑解耦
+### 4. Three-layer split decouples data source from gate logic
 
-- **选择**：`multi_axis`（算轴）/ `attribution`（归因）/ `decision`（组装）三层，`EvalRecord` 作为稳定中间契约。
-- **代价/收益**：本期数据源是 fixtures（`seed_demo.py` 造的假数据，纯连通性 + 流程演示），后续真 judge 输出、乃至 shadow mode 线上观测都喂同一 `EvalRecord` shape——gate 逻辑零改动即可复用。代价是多一层 schema 约束，但这正是复用的前提。
+- **Choice**: `multi_axis` (axes) / `attribution` / `decision` (assembly), with `EvalRecord` as the stable intermediate contract.
+- **Trade-off**: this phase's source is fixtures (`seed_demo.py` fake data for connectivity + flow demo). Later real judge output, and even shadow-mode live observations, feed the same `EvalRecord` shape—gate logic reused with zero changes. The cost is an extra schema constraint, which is exactly the reuse premise.

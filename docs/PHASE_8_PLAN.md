@@ -1,17 +1,17 @@
-# Phase 8 技术方案 · RAG-aware Evaluator（RAGAS）
+# Phase 8 design · RAG-aware Evaluator (RAGAS)
 
-## 一句话
+## In one sentence
 
-为 `task_type=rag` 的 case 引入专用 RAG（Retrieval-Augmented Generation，检索增强生成）评测路径：candidate 端动态检索产出 contexts，再用真 `ragas` 包跑 **RAGAS faithfulness / context-precision / answer-relevance（忠实度 / 上下文精确率 / 答案相关性）** 三项打分。同时把 runner 里硬编码的「candidate → MultiJudge」流水重构成由 `task_type` 驱动的 `EvaluatorRouter`，给 Phase 9（agent）留好分支位。
+Introduce a dedicated RAG (Retrieval-Augmented Generation) eval path for `task_type=rag` cases: the candidate side retrieves contexts dynamically, then the real `ragas` package scores **RAGAS faithfulness / context-precision / answer-relevance**. At the same time, replace the hardcoded "candidate → MultiJudge" pipeline in the runner with a `task_type`-driven `EvaluatorRouter`, leaving a branch slot for Phase 9 (agent).
 
-## 整体架构与数据流
+## Architecture and data flow
 
 ```mermaid
 flowchart LR
-  Case["EvalCaseRow<br/>task_type=rag<br/>+ retrieved_contexts (金标)"]
-  Router["EvaluatorRouter<br/>(按 task_type 分发)"]
+  Case["EvalCaseRow<br/>task_type=rag<br/>+ retrieved_contexts (gold)"]
+  Router["EvaluatorRouter<br/>(dispatch by task_type)"]
   RAG["RagEvaluator"]
-  Retriever["EmbeddingRetriever<br/>(corpus.json 上做向量检索)"]
+  Retriever["EmbeddingRetriever<br/>(vector search on corpus.json)"]
   Gen["Candidate generator<br/>(litellm.acompletion)"]
   Ragas["ragas.evaluate<br/>(faithfulness +<br/>context_precision +<br/>answer_relevance)"]
   Adapter["LiteLLMChatModel<br/>+ LiteLLMEmbeddings<br/>(langchain shim)"]
@@ -19,119 +19,119 @@ flowchart LR
   Gate["GateReport<br/>.axes[quality].sub_metrics"]
 
   Case --> Router --> RAG
-  RAG --> Retriever -->|"动态 contexts"| Gen --> Ragas
-  Ragas <-->|"LLM / embedding 调用"| Adapter
+  RAG --> Retriever -->|"dynamic contexts"| Gen --> Ragas
+  Ragas <-->|"LLM / embedding calls"| Adapter
   Ragas --> DB --> Gate
 ```
 
-数据流的核心是「**检索发生在 candidate 端**」：retriever 先按 question 查出动态 contexts，candidate generator 拿 `{contexts}` 渲染 prompt 产出答案，ragas 再用 (question, answer, contexts, 金标) 算三项分数。运行时实际检索到的 contexts 会落库（`EvalResultRow.retrieved_contexts`）供 badcase 审计。
+The core of the data flow is that **retrieval happens on the candidate side**: the retriever first fetches dynamic contexts for the question, the candidate generator renders `{contexts}` into the prompt and produces an answer, then ragas scores (question, answer, contexts, gold). Runtime-retrieved contexts are persisted (`EvalResultRow.retrieved_contexts`) for badcase audit.
 
-## 模块布局：从 judge.runner 到 evaluator 抽象层
+## Module layout: from judge.runner to an evaluator abstraction
 
-重构的主线是把「编排（orchestration）」从 judge 模块抽出来，`judge/` 退守为 LLM-as-judge（用 LLM 当判官）原语，被 `evaluator.generic` 复用：
+The refactor's main line is pulling **orchestration** out of the judge module. `judge/` retreats to LLM-as-judge primitives, reused by `evaluator.generic`:
 
 ```
 src/evalgate/evaluator/
   base.py            # Evaluator Protocol + EvaluationOutcome + UnsupportedTaskTypeError
   router.py          # EvaluatorRouter + build_router
-  runner.py          # iter_eval / run_eval（替代旧 judge.runner）
-  generic.py         # GenericEvaluator（原 run_candidate + MultiJudge 路径）
+  runner.py          # iter_eval / run_eval (replaces old judge.runner)
+  generic.py         # GenericEvaluator (former run_candidate + MultiJudge path)
   rag/
     evaluator.py     # RagEvaluator + _RagasScorer
     retriever.py     # Retriever Protocol + EmbeddingRetriever
     ragas_adapter.py # LiteLLMChatModel + LiteLLMEmbeddings + build_ragas_components
 ```
 
-**`EvaluationOutcome` 是新的统一货币**：每个 evaluator 返回 `(score, sub_metrics, confidence, output_text, retrieved_contexts, candidate_cost, candidate_latency, raw_calls, reason, error)`。runner 从此不再关心 candidate 怎么跑、judge 怎么聚合——任何任务类型都收敛到这一个结构。
+**`EvaluationOutcome` is the new common currency**: every evaluator returns `(score, sub_metrics, confidence, output_text, retrieved_contexts, candidate_cost, candidate_latency, raw_calls, reason, error)`. The runner no longer cares how the candidate ran or how the judge aggregated—every task type converges on this one structure.
 
-`EvaluatorRouter` 按 `task_type` 分发：
+`EvaluatorRouter` dispatches by `task_type`:
 
 ```python
 def build_router(spec, *, mock) -> EvaluatorRouter:
     registry = {TaskKind.generic: GenericEvaluator(spec)}
     if spec.retriever and spec.rag_evaluator:
-        registry[TaskKind.rag] = RagEvaluator(spec, mock=mock)   # 延迟导入 ragas
+        registry[TaskKind.rag] = RagEvaluator(spec, mock=mock)   # lazy-import ragas
     return EvaluatorRouter(registry)
 ```
 
-`agent` 暂不注册，Phase 9 加一行即可接上；`runner.iter_eval` 遇到未注册的 task_type，会把异常转成 `error=True` 的 `EvaluationOutcome`，不污染整个 run。
+`agent` is not registered yet; Phase 9 adds one line. If `runner.iter_eval` hits an unregistered `task_type`, the exception becomes an `EvaluationOutcome` with `error=True` and does not poison the whole run.
 
-## RagEvaluator 评测流程
+## RagEvaluator scoring flow
 
 ```python
 async def evaluate(self, case, *, mock=False) -> EvaluationOutcome:
     question = case.input["question"] or case.input["prompt"]
     ref_answer = (case.expected or {}).get("answer")        # ground truth answer
-    ref_contexts = list(case.retrieved_contexts or [])      # 金标 contexts
+    ref_contexts = list(case.retrieved_contexts or [])      # gold contexts
 
-    contexts = await self.retriever.retrieve(question)       # 动态检索
-    candidate = await run_candidate(                         # 复用 judge.candidate
+    contexts = await self.retriever.retrieve(question)       # dynamic retrieval
+    candidate = await run_candidate(                         # reuse judge.candidate
         {**case.input, "contexts": "\n\n".join(contexts)}, spec, ...)
-    sub_metrics, raw_calls = await self.scorer.score(        # 走 ragas 包
+    sub_metrics, raw_calls = await self.scorer.score(        # ragas package
         question=question, answer=candidate.text, contexts=contexts,
         reference_answer=ref_answer, reference_contexts=ref_contexts)
     return EvaluationOutcome(score=mean(sub_metrics.values()),
                              sub_metrics=sub_metrics, raw_calls=raw_calls, ...)
 ```
 
-- `case.retrieved_contexts` 是**金标 contexts（reference）**，用于 `context_precision_with_reference`（衡量动态检索 vs 金标的差距）；`expected.answer` 仍是 ground truth answer。
-- `_RagasScorer.score` 把 row 包成 `datasets.Dataset` 交给 `ragas.evaluate`（ragas v0.2 是同步入口，放进 `loop.run_in_executor` 跑），再把每个 metric 的 0..1 分转成 `JudgeCallRecord`（`judge_model="ragas:<metric>"`）落 `eval_judge_calls`，方便后续按单项做校准。
-- 异常分三档拦截，都不越出 case 边界：retriever 失败 → `retrieve_failure`；candidate 失败 → `candidate_failure`；ragas 失败 → `ragas_failure`。
+- `case.retrieved_contexts` is **gold / reference contexts**, used by `context_precision_with_reference` (gap between dynamic retrieval and gold); `expected.answer` remains the ground-truth answer.
+- `_RagasScorer.score` wraps the row as a `datasets.Dataset` and hands it to `ragas.evaluate` (ragas v0.2 is a sync entrypoint, run via `loop.run_in_executor`), then turns each metric's 0..1 score into a `JudgeCallRecord` (`judge_model="ragas:<metric>"`) persisted on `eval_judge_calls` so later calibration can be per-metric.
+- Exceptions are caught in three bands, none of which escape the case: retriever failure → `retrieve_failure`; candidate failure → `candidate_failure`; ragas failure → `ragas_failure`.
 
-**EmbeddingRetriever**：加载 `corpus.json`，首次 `retrieve` 时 lazy embed 全 corpus（`asyncio.Lock` 防并发重复 embed），余弦相似度排序取 top-k（`top_k` 超 corpus 大小自动 clamp）。
+**EmbeddingRetriever**: load `corpus.json`; on first `retrieve`, lazily embed the whole corpus (`asyncio.Lock` prevents concurrent double-embed); cosine similarity, take top-k (`top_k` clamped to corpus size).
 
-## Gate 的 sub-metric 嵌套
+## Nested gate sub-metrics
 
-`AxisMetric` 新增递归字段 `sub_metrics: dict[str, "AxisMetric"] | None`。[`multi_axis.py`](../src/evalgate/report/multi_axis.py) 跑完四主轴后，对 quality 轴扫 `records[*].sub_metrics`，每个 RAGAS 指标各算一个 higher-is-better 的 mean 轴（带 bootstrap CI，自助法置信区间），嵌进 `quality.sub_metrics`。
+`AxisMetric` gains a recursive field `sub_metrics: dict[str, "AxisMetric"] | None`. After the four main axes, [`multi_axis.py`](../src/evalgate/report/multi_axis.py) scans `records[*].sub_metrics` on the quality axis and builds a higher-is-better mean axis per RAGAS metric (with bootstrap CI), nested under `quality.sub_metrics`.
 
-判定规则：`quality.passed = passed AND all(sub.passed)`——**任一 sub-metric 显著回归，quality 轴整体 fail**（聚合主指标仍按 score 算 baseline/candidate）。混合 set（一半 generic 一半 rag）时，sub-metric 只在 RAG records 上聚合，generic case 不污染均值；gate summary 会显式列出是哪一项（faithfulness / context_precision / answer_relevance）跌了多少个百分点。
+Decision rule: `quality.passed = passed AND all(sub.passed)`—**any significantly regressed sub-metric fails the quality axis as a whole** (the aggregate still uses score for baseline/candidate). On mixed sets (half generic, half rag), sub-metrics aggregate only over RAG records so generic cases do not pollute the mean; the gate summary names which item (faithfulness / context_precision / answer_relevance) dropped by how many points.
 
-## Schema 变更
+## Schema changes
 
-- `EvalCaseRow.retrieved_contexts: list[str]`（金标 contexts，NOT NULL，default `[]`）。
-- `EvalResultRow.sub_metrics: dict[str, float] | None`，例 `{"faithfulness":0.83,"context_precision":0.71,"answer_relevance":0.90}`。
-- `EvalResultRow.retrieved_contexts: list[str] | None`：运行时实际检索结果。
+- `EvalCaseRow.retrieved_contexts: list[str]` (gold contexts, NOT NULL, default `[]`).
+- `EvalResultRow.sub_metrics: dict[str, float] | None`, e.g. `{"faithfulness":0.83,"context_precision":0.71,"answer_relevance":0.90}`.
+- `EvalResultRow.retrieved_contexts: list[str] | None`: actual retrieval at runtime.
 
-SQLite 走 `batch_alter_table` 加列，PG 用 JSONB，`server_default '[]'` 兜底已有行。
+SQLite adds columns via `batch_alter_table`; PG uses JSONB; `server_default '[]'` covers existing rows.
 
-## 技术选型与抉择
+## Technical choices
 
-**1. 任务分层 evaluator：RAG 走 RAGAS，而非通用 rubric（ADR-005）**
+**1. Task-layered evaluators: RAG uses RAGAS, not a generic rubric (ADR-005)**
 
-纯 LLM-as-judge + 单一通用 rubric 评 RAG 必然失真——RAG 的质量约束是「答案有没有忠于检索到的上下文、上下文检得准不准」，不是泛泛的「回答好不好」。ADR-005 据此把 evaluator 按 `task_type` 分层：RAG → RAGAS，Agent → trajectory eval，通用 → rubric LLM-as-judge，由 `EvaluatorRouter` 分发。代价是抽象层变多、评测成本上升，但这是 evaluator 质量的根本约束，否则 RAG 和 Agent 共用一套 rubric 两边都不准。
+A pure LLM-as-judge plus one generic rubric will distort RAG—RAG quality is "did the answer stay faithful to retrieved context, and was retrieval precise," not a vague "was the answer good." ADR-005 therefore layers evaluators by `task_type`: RAG → RAGAS, Agent → trajectory eval, generic → rubric LLM-as-judge, dispatched by `EvaluatorRouter`. The cost is more abstraction and higher eval cost, but that is a quality constraint: one rubric shared by RAG and Agent is inaccurate for both.
 
-**2. 直接吃真 ragas 包 + 写 LiteLLM↔langchain adapter，而非自维护指标实现**
+**2. Use the real ragas package + a LiteLLM↔langchain adapter, not a self-maintained metric implementation**
 
-RAGAS 的指标定义（claims 抽取、context precision 算法等）会随版本演进。自己复刻一份 prompts/算法意味着要永久追平上游。选择写一个最小的 langchain shim（[`ragas_adapter.py`](../src/evalgate/evaluator/rag/ragas_adapter.py)）把 ragas 的调用导向我们统一的 LiteLLM 网关：
+RAGAS metric definitions (claim extraction, context-precision algorithm, etc.) evolve with versions. Forking prompts/algorithms means forever chasing upstream. We write a minimal langchain shim ([`ragas_adapter.py`](../src/evalgate/evaluator/rag/ragas_adapter.py)) that steers ragas through our unified LiteLLM gateway:
 
-- `LiteLLMChatModel(BaseChatModel)`：把 messages 转 LiteLLM 格式调 `litellm.acompletion`；`mock_text` 在测试里短路返回固定串；litellm 异常吞成内嵌 `{"error":...}` 字符串而不是 raise，让 ragas 自行降级。
-- `LiteLLMEmbeddings(Embeddings)`：走 `litellm.aembedding`；`mock_mode` 下用 SHA-256 → 384 维确定性伪向量，CI 不连 Ollama。
+- `LiteLLMChatModel(BaseChatModel)`: convert messages to LiteLLM format and call `litellm.acompletion`; `mock_text` short-circuits to a fixed string in tests; litellm exceptions become an embedded `{"error":...}` string instead of raise, so ragas can degrade on its own.
+- `LiteLLMEmbeddings(Embeddings)`: `litellm.aembedding`; in `mock_mode`, SHA-256 → 384-dim deterministic pseudo-vectors so CI never talks to Ollama.
 
-收益：ragas 的 prompt/版本演进我们直接吃，不维护副本；成本是多一层 adapter 和对 ragas 版本的兼容（固定 `>=0.1.21,<0.3`，CI 全 mock 不依赖其在线 prompt fetching）。
+Benefit: we consume ragas prompt/version evolution instead of maintaining a fork. Cost: an adapter layer and ragas version compatibility (pin `>=0.1.21,<0.3`; CI is fully mocked and does not depend on ragas fetching prompts online).
 
-**3. 检索放在 candidate 端，金标 contexts 当 reference**
+**3. Retrieval on the candidate side; gold contexts as reference**
 
-把 retriever 挂在 candidate 端，才能评测「真实检索 + 生成」的端到端质量，而不是只评一段给定上下文上的生成。case 上另存一份金标 contexts 作为 reference，用于 `context_precision_with_reference` 衡量动态检索与金标的差距。
+Hanging the retriever on the candidate side evaluates end-to-end "real retrieval + generation," not generation given a fixed context. A separate gold context list on the case is the reference for `context_precision_with_reference`.
 
-**4. sub-metric 落库到 `eval_judge_calls`，per-metric 存分**
+**4. Persist sub-metrics on `eval_judge_calls`, one score per metric**
 
-每个 RAGAS 指标的 per-call score 都以 `JudgeCallRecord` 落库，而非只存聚合值。这样 UI 能直接读 DB 渲染 RAG 详情、后续校准能对三项分别拟合，都不必重跑评测。
+Each RAGAS metric's per-call score is stored as a `JudgeCallRecord`, not only the aggregate. The UI can render RAG detail from the DB, and later calibration can fit the three metrics separately, without re-running eval.
 
-**5. 不追求向后兼容，直接删 `judge.runner`**
+**5. No backward compatibility: delete `judge.runner`**
 
-重构时明确放弃兼容旧编排路径：`judge.runner` 直接删除，CLI / 测试 / scripts 一并迁到 `evaluator.runner`。理由是 `judge/` 与 `evaluator/` 职责重叠会长期制造混乱，一次切干净比留两套并存更省心。
+The refactor explicitly drops the old orchestration path: `judge.runner` is deleted; CLI / tests / scripts all move to `evaluator.runner`. Overlapping `judge/` and `evaluator/` duties would create lasting confusion; one clean cut is cheaper than two stacks in parallel.
 
-## 已知边界
+## Known limits
 
-- mock 模式下 ragas 拿到固定的占位字符串无法解析（claims 抽取等需要真实结构化输出），sub_metric 会统一收敛到 0——端到端 plumbing 全通，但**有意义的分数需要真 LLM 模式**才能产出。
-- 三项之外的 `context_recall`、多种 retriever kind、动态 reload corpus、自定义 ragas metric 等留给后续迭代。
+- In mock mode ragas receives a fixed placeholder string it cannot parse (claim extraction needs real structured output), so sub_metrics collapse to 0—end-to-end plumbing works, but **meaningful scores need real-LLM mode**.
+- `context_recall`, multiple retriever kinds, dynamic corpus reload, custom ragas metrics, etc. are left for later iterations.
 
-## 与后续阶段的衔接
+## Handoff to later phases
 
-- **Agent**：`EvaluatorRouter` 已支持注册 `TaskKind.agent`，Phase 9 加一行即可，不动 runner / persistence / records 流。
-- **Safety**：`EvaluationOutcome` 统一承载逐 case 结果，safety 作为横切关注点挂在 runner 层（每个 evaluator 返回后 augment），三类 evaluator 都不感知 safety。
-- **UI**：`EvalResultRow.sub_metrics` + `retrieved_contexts` 落库，UI 直接读 DB 渲染 RAG 详情页，不重跑。
+- **Agent**: `EvaluatorRouter` already supports registering `TaskKind.agent`; Phase 9 adds one line; runner / persistence / records flow stay put.
+- **Safety**: `EvaluationOutcome` uniformly carries per-case results; safety is a cross-cutting concern on the runner (augment after each evaluator returns); none of the three evaluators know about safety.
+- **UI**: `EvalResultRow.sub_metrics` + `retrieved_contexts` persist; the UI reads the DB for a RAG detail page, no re-run.
 
-## 测试策略
+## Test strategy
 
-围绕 router 分发、retriever 检索、RagEvaluator 三档异常、langchain adapter 翻译/mock、sub-metric 落库与 gate 分项判定做端到端覆盖，全程 aiosqlite + mock，CI 不连 Ollama。
+End-to-end coverage of router dispatch, retriever search, RagEvaluator's three exception bands, langchain adapter translate/mock, sub-metric persist, and per-item gate decisions. Throughout: aiosqlite + mock; CI does not talk to Ollama.

@@ -1,435 +1,435 @@
-# DECISIONS · 核心技术决策日志
+# DECISIONS · Core technical decision log
 
-> 本文件记录 EvalGate **真正影响架构 / 路线 / 长期可维护性**的技术决策。
-> 不记 "用了 ruff 而不是 black" 这种纯偏好；记的是 "未来某个工程师接手会问『为什么不那样做？』" 的决策。
+> This file records EvalGate technical decisions that **actually affect architecture, direction, or long-term maintainability**.
+> It does not record pure preferences such as "ruff instead of black"; it records decisions a future engineer would ask "why didn't we do it that other way?"
 >
-> 格式参考 ADR（Architecture Decision Record），但不严格 — 关键四要素：**Context（背景）/ Decision（决策）/ Rationale（为什么）/ Consequences（代价）**。
+> Format follows ADR (Architecture Decision Record) loosely — four essential parts: **Context / Decision / Rationale / Consequences**.
 >
-> 决策一旦写下就**不删除、不重写**；如果反悔了，**新加一条** `Status: superseded by ADR-N` 的反转决策，保留思考轨迹。
+> Once written, a decision is **never deleted or rewritten**; if we reverse course, **add a new entry** with `Status: superseded by ADR-N` so the reasoning trail stays.
 >
-> 编号单调递增。新决策追加在文末。
+> Numbers increase monotonically. New decisions are appended at the end.
 
-## 决策索引（ADR index）
+## ADR index
 
-| # | 决策 | 状态 | 一句话 |
+| # | Decision | Status | One-liner |
 |---|---|---|---|
-| **ADR-001** | OTel 作为 trace 协议 | accepted | 用开放标准换"应用方零迁移 + 无 vendor lock-in" |
-| **ADR-002** | Postgres + JSONB | accepted | schema-less 字段用 JSONB，兼顾灵活与 SQL 能力 |
-| **ADR-003** | 砍掉 Prompt 管理 UI | accepted | prompt 当配置文件交给 git，聚焦"评测" |
-| **ADR-004** | 四轴 + 显著性 + 归因 gate | accepted（Phase 2） | 覆盖漏判 / 误 block / 不可解释三个坑 |
-| **ADR-005** | 任务分层 + 多 judge 去偏 | accepted（Phase 5/6/8/9） | 降方差 + 去 bias，覆盖 RAG / Agent / 通用 |
-| **ADR-006** | UI 用 Streamlit | accepted | 运维向 dashboard，省下时间投 backend |
-| **ADR-007** | 用 `uv` 管包 | accepted | 速度快、单二进制、PEP 621 兼容 |
-| **ADR-008** | LiteLLM 统一 LLM 调用 | accepted（Phase 5） | 一个接口调 100+ provider，支撑 cross-vote |
-| **ADR-009** | CI gate 跑 mock judge + ephemeral SQLite | accepted（Phase 12） | CI 离线确定性零成本，真模型走 `make ci-gate-real` |
-| **ADR-010** | Shadow Mode：SDK 侧打分 + on-demand rollup | accepted（Phase 13） | 后端保持薄层，复用 `EvalRecord` + `build_gate_report`，不背 scheduler 依赖 |
-| **ADR-011** | Case status/source 生命周期 + reference-free 对抗出题 | accepted（Phase 14） | pending 永不入 gate 只靠 `list_cases` 默认 active-only；hit=绝对阈值；红队 case 无 gold |
-| **ADR-012** | Sequential gate：paired 序贯检验 + α-spending / curtailment、仅 quality | accepted（Phase 15） | early-FAIL 用 Lan-DeMets α-spending、early-PASS 用 stochastic curtailment；只对 quality 序贯、其余固定-N 快照；sequential 判定权威 |
-| **ADR-013** | Judge Calibration：校准 score（非 confidence）+ DB 人标表 + 读时 Calibrator | accepted（Phase 16） | 用 temperature scaling 把 `score` 变真概率；人标存 `human_labels` 表（P17 κ 复用）；读时变换保持 `eval_results` 不可变 |
-| **ADR-014** | Cohen's κ 复用 `human_labels` + 阈值化判定 | accepted（Phase 17） | κ 扣掉"碰巧一致"度量 judge vs 人工；`score ≥ 0.5` 二值化；零新表/migration |
-| **ADR-015** | p95 显著性：平滑 + 样本量守卫 bootstrap（还 ADR-004 债） | accepted（Phase 17） | Silverman 平滑修尾分位离散、`min_reliable_n` 守卫防小样本 false-block |
-| **ADR-016** | 条件校准：per-`task_type` / per-`judge_model` 温度 + 读时分组选 T | accepted（Phase 17，落实 ADR-013 预留） | 全局 T 兜底 + 分组各拟合；薄分组回落全局；`eval_results` 不加列 |
-| **ADR-017** | 云部署：ECS Fargate + RDS，Terraform 起栈，GitHub OIDC 发布 | accepted（Phase 18） | 无服务器容器省运维、比 EKS 简单；单 public-subnet 省 NAT（demo 取舍）；OIDC 免长期密钥；镜像多阶段非 root |
+| **ADR-001** | OTel as the trace protocol | accepted | Open standard for zero-migration apps and no vendor lock-in |
+| **ADR-002** | Postgres + JSONB | accepted | Schema-less fields in JSONB, keeping flexibility and SQL |
+| **ADR-003** | Cut the Prompt management UI | accepted | Prompts as git-managed config; focus on evaluation |
+| **ADR-004** | Four-axis + significance + attribution gate | accepted (Phase 2) | Covers misses, false blocks, and unexplained failures |
+| **ADR-005** | Task-tiered evaluators + multi-judge debiasing | accepted (Phase 5/6/8/9) | Lower variance and bias; cover RAG / Agent / generic |
+| **ADR-006** | Streamlit for UI | accepted | Ops-oriented dashboard; spend time on the backend |
+| **ADR-007** | `uv` for package management | accepted | Fast, single binary, PEP 621 compatible |
+| **ADR-008** | LiteLLM for unified LLM calls | accepted (Phase 5) | One interface for 100+ providers; enables cross-vote |
+| **ADR-009** | CI gate with mock judge + ephemeral SQLite | accepted (Phase 12) | Offline, deterministic, zero-cost CI; real models via `make ci-gate-real` |
+| **ADR-010** | Shadow Mode: SDK-side scoring + on-demand rollup | accepted (Phase 13) | Thin backend; reuse `EvalRecord` + `build_gate_report`; no scheduler dependency |
+| **ADR-011** | Case status/source lifecycle + reference-free adversarial cases | accepted (Phase 14) | Pending never enters the gate via `list_cases` default active-only; hit = absolute threshold; red-team cases have no gold |
+| **ADR-012** | Sequential gate: paired sequential test + α-spending / curtailment, quality only | accepted (Phase 15) | Early-FAIL via Lan-DeMets α-spending, early-PASS via stochastic curtailment; sequential on quality only, other axes fixed-N snapshots; sequential decision is authoritative |
+| **ADR-013** | Judge Calibration: calibrate score (not confidence) + DB human-label table + read-time Calibrator | accepted (Phase 16) | Temperature scaling turns `score` into a true probability; labels in `human_labels` (reused for P17 κ); read-time transform keeps `eval_results` immutable |
+| **ADR-014** | Cohen's κ reuses `human_labels` + thresholded decisions | accepted (Phase 17) | κ measures judge vs human after chance agreement; binarize at `score ≥ 0.5`; no new table/migration |
+| **ADR-015** | p95 significance: smoothed + sample-size-guarded bootstrap (pays ADR-004 debt) | accepted (Phase 17) | Silverman smoothing for tail-quantile discreteness; `min_reliable_n` guard against small-sample false-blocks |
+| **ADR-016** | Conditional calibration: per-`task_type` / per-`judge_model` temperatures + read-time group T | accepted (Phase 17, implements ADR-013 reserved shape) | Global T as fallback + per-group fits; thin groups fall back to global; no extra `eval_results` columns |
+| **ADR-017** | Cloud deploy: ECS Fargate + RDS, Terraform stack, GitHub OIDC publish | accepted (Phase 18) | Serverless containers, simpler than EKS; single public subnet skips NAT (demo tradeoff); OIDC avoids long-lived keys; multi-stage non-root image |
 
-> 阅读顺序提示：每条决策都按 **Context（背景）→ Decision（决策）→ Rationale（为什么）→ Consequences（代价）** 四段展开。
+> Reading order: each decision expands as **Context → Decision → Rationale → Consequences**.
 
 ---
 
-## ADR-001 · 用 OpenTelemetry 作为 trace 协议，不做自家 SDK
+## ADR-001 · Use OpenTelemetry as the trace protocol; do not build our own SDK
 
 **Date**: 2026-05-14 · **Status**: accepted
 
-**Context**：业内同类产品（LangSmith、Langfuse 早期）都做自家 SDK 来上报 trace，能塞更多 metadata，体验顺滑；OpenTelemetry / OTLP 是更开放的业界标准，应用方一行 instrumentor 就接入。
+**Context**: Peer products (LangSmith, early Langfuse) ship proprietary SDKs for trace ingest so they can attach richer metadata and a smoother DX. OpenTelemetry / OTLP is the more open industry standard; an app can instrument with a single instrumentor.
 
-**Decision**：所有 trace ingest 走 OTLP（HTTP / gRPC），不提供也不计划提供 EvalGate 自家 SDK。
+**Decision**: All trace ingest goes over OTLP (HTTP / gRPC). EvalGate does not provide, and does not plan to provide, its own SDK.
 
-**Rationale**：
-1. 应用方接入成本是 B 端工具的首要决定因素。OTel 装一个 `opentelemetry-instrumentation-openai` 就能上报，自家 SDK 要改业务代码。
-2. **避免 vendor lock-in 是企业客户最在意的卖点**。客户未来想换 backend（Datadog / Honeycomb / Phoenix）零迁移成本。
-3. 开源生态（`openinference` / `openllmetry`）已经把 LLM-specific 的 semantic convention 推得差不多了，搭顺风车而不是另起炉灶。
+**Rationale**:
+1. App-side integration cost is the main adoption factor for B2B tools. OTel plus `opentelemetry-instrumentation-openai` is enough to report; a proprietary SDK would require changing business code.
+2. **Avoiding vendor lock-in is the selling point enterprise buyers care about most.** Switching backends later (Datadog / Honeycomb / Phoenix) has zero migration cost.
+3. The open ecosystem (`openinference` / `openllmetry`) already covers most LLM-specific semantic conventions; ride that rather than invent a new one.
 
-**Consequences**：
-- 需要写 OTel attribute → 内部 `traces` + `spans` 数据模型的 mapper（已落在 `src/evalgate/ingest/otel_mapper.py`）。
-- 失去对 SDK 体验的精细控制，遇到边角字段缺失要等上游 / 自己提 PR。
-- ingest 路径必须能消化"未来不确定 attribute"，所以选 JSONB 列存（见 ADR-002）。
+**Consequences**:
+- Need a mapper from OTel attributes to the internal `traces` + `spans` model (already in `src/evalgate/ingest/otel_mapper.py`).
+- Lose fine-grained control of SDK UX; missing edge-case fields wait on upstream or our own PRs.
+- The ingest path must absorb "future unknown attributes," which is why we store them in JSONB (see ADR-002).
 
 ---
 
-## ADR-002 · Postgres + JSONB 而非 NoSQL（Mongo / DynamoDB）
+## ADR-002 · Postgres + JSONB rather than NoSQL (Mongo / DynamoDB)
 
 **Date**: 2026-05-14 · **Status**: accepted
 
-**Context**：OTel span 的 `attributes` 是 schema-less key-value，传统 RDBMS 表达起来很别扭；NoSQL 天然适合。但 EvalGate 的核心查询场景是 "按 tag 聚合"、"按时间窗口算 p95"、"join eval_run × eval_case" — 这些都是 SQL 强项。
+**Context**: OTel span `attributes` are schema-less key-value and sit awkwardly in a classic RDBMS; NoSQL is a natural fit. EvalGate's core queries, though, are "aggregate by tag," "p95 over a time window," and "join eval_run × eval_case" — SQL strengths.
 
-**Decision**：
-- 主存储用 **Postgres**。
-- 不固定 schema 的字段（OTel attributes、judge raw output、tool args）用 **JSONB** 列。
-- schema 演进用 **Alembic** 显式 migration。
+**Decision**:
+- Primary store is **Postgres**.
+- Unfixed-schema fields (OTel attributes, judge raw output, tool args) live in **JSONB** columns.
+- Schema evolution uses explicit **Alembic** migrations.
 
-**Rationale**：
-1. JSONB 在 PG 上是一等公民，可以建 GIN 索引，`->`、`->>`、`@>` 操作都很顺。
-2. 团队（=我自己）SQL 比 Mongo 熟太多，bootstrap 速度优先。
-3. 单实例 PG 撑到几千万行 trace 不是问题；真到那个量级再切 ClickHouse 也来得及（届时 trace 表是冷写热读，很容易迁）。
-4. RDS 上托管 Postgres 是 AWS 一等支持，Phase 13 的部署成本可控。
+**Rationale**:
+1. JSONB is first-class on Postgres: GIN indexes, `->`, `->>`, `@>` all work well.
+2. The team (one person) is far more fluent in SQL than Mongo; bootstrap speed wins.
+3. A single Postgres instance can handle tens of millions of trace rows; moving to ClickHouse at that scale is still timely (the trace table is cold-write / hot-read and easy to migrate).
+4. Managed Postgres on RDS is first-class AWS support; Phase 13 deploy cost stays controllable.
 
-**Consequences**：
-- 高吞吐 OTLP ingest 要靠 async + batch insert 顶（FastAPI + asyncpg + `COPY` 或多行 insert）。
-- 后期如果 trace 量级到 10^9，需要切到列存（ClickHouse）或冷热分层（PG 热 + S3 + Athena 冷）。届时新加 ADR。
+**Consequences**:
+- High-throughput OTLP ingest needs async + batch insert (FastAPI + asyncpg + `COPY` or multi-row insert).
+- If trace volume later hits 10^9, move to columnar store (ClickHouse) or hot/cold split (PG hot + S3 + Athena cold). Add a new ADR then.
 
 ---
 
-## ADR-003 · 砍掉 Prompt 管理 UI，prompt 当配置文件（git-native）
+## ADR-003 · Cut the Prompt management UI; prompts as config files (git-native)
 
 **Date**: 2026-05-14 · **Status**: accepted
 
-**Context**：LangSmith / PromptLayer 都做了重型 prompt hub（version diff、A/B、UI 编辑）。看起来很全，是不是要跟？
+**Context**: LangSmith / PromptLayer both ship heavy prompt hubs (version diffs, A/B, UI editors). Looks complete — should we follow?
 
-**Decision**：**完全不做** prompt 管理 UI。Prompt 以 YAML / Python 模块形式 commit 在应用方仓库，由 git 自然管版本。EvalGate 只负责"评测一个给定的 prompt"。
+**Decision**: **Do not** build a prompt management UI. Prompts are committed in the app repo as YAML / Python modules; git versions them. EvalGate only evaluates a given prompt.
 
-**Rationale**：
-1. 这是红海，5+ OSS 工具都做了，再做一个零差异化。
-2. UI 工作量翻倍，但 differentiation 为零 — 与其做这个不如把 evaluator 深度做透。
-3. **强化"Eval-First"定位**：我们不替代 prompt 工具链，我们是 prompt 改动的"质检岗"。
-4. Prompt as code → 跟 PR / code review / git blame 自然集成，是更工程化的形态。
+**Rationale**:
+1. This is a red ocean: 5+ OSS tools already do it; another copy has zero differentiation.
+2. UI work would roughly double, with zero differentiation — better to deepen the evaluator.
+3. **Reinforces an eval-first position**: we do not replace the prompt toolchain; we are the QA gate on prompt changes.
+4. Prompt-as-code integrates naturally with PRs, code review, and git blame — a more engineering-native shape.
 
-**Consequences**：
-- 应用方需要自己定 prompt 文件格式（YAML / Jinja / Python module）。我们提供 example schema 但不强约束。
-- 失去 "non-engineer 改 prompt" 这个用户群（PM / 标注员），但他们本来也不是我们的目标用户。
-
----
-
-## ADR-004 · CI Gate 是"四轴 + bootstrap CI 显著性 + tag 归因"，不是单 pass rate
-
-**Date**: 2026-05-14 · **Status**: accepted（Phase 2 已实现 v1）
-
-**Context**：市面 OSS eval 工具默认形态是"pass rate 跌破阈值 → fail"。这种 gate 在生产里有三个已知坑：
-- 漏判：pass rate 不变但 cost 翻倍 / latency p95 涨 2 倍 / safety violation 多了。
-- 误 block：LLM eval 是 stochastic 的，92% → 89% 可能只是噪声；误 block 一次，下次所有人 `--force` 跳过 gate，**整个系统就废了**。
-- 不解决问题："pass rate 跌了 3%" 是 alarm 不是 root cause，开发者还得自己翻 trace。
-
-**Decision**：CI gate 必备三件套 —
-1. **多轴**：quality / cost / latency_p95 / safety 四轴并联，任一轴 regress 即 fail。
-2. **统计显著性**：mean 类轴用 **bootstrap CI（1000 次重采样，95%）**，CI 不跨 0 才算真 regression。p95 类轴 v1 先用阈值（重采样的 p95 解释比较微妙，留待 Phase 17 复盘）。
-3. **tag 归因**：每条 case 打 tag，failed 时报告"哪个 tag 簇集体跌了"，而不是只给整体数字。
-
-**Rationale**：
-1. 漏判靠多轴覆盖，误 block 靠显著性判断，不可解释靠 tag 归因 — 三者缺一就是 demo 而不是产品。
-2. bootstrap 比 paired t-test 对分布形状不敏感，eval 分数经常是非正态的（双峰或截断），bootstrap 更稳。
-3. 让 gate 是"开发者愿意保留"而不是"绕过去"的形态，这是整个产品成立的前提。
-
-**Consequences**：
-- Bootstrap 计算量 = O(N × resamples)，对 eval set 几百条 × 1000 重采样在毫秒级，相比 judge 调用本身可忽略。
-- Tag 维护成本下放给应用方（在 prompt / case 里手工或半自动打 tag）。
-- p95 显著性留了技术债，Phase 17 要复盘。
+**Consequences**:
+- Apps choose their own prompt file format (YAML / Jinja / Python module). We provide an example schema but do not hard-constrain it.
+- We lose the "non-engineers editing prompts" audience (PMs / labelers); they were never the target users.
 
 ---
 
-## ADR-005 · 任务分层 evaluator + 多 judge cross-vote + position-swap + self-consistency
+## ADR-004 · The CI gate is four axes + bootstrap CI significance + tag attribution, not a single pass rate
 
-**Date**: 2026-05-14 · **Status**: accepted（Phase 5/6/8/9 待落地）
+**Date**: 2026-05-14 · **Status**: accepted (Phase 2 shipped v1)
 
-**Context**：纯 LLM-as-Judge（单模型 + 单次调用 + 通用 rubric）在 2026 已经是 baseline，至少有三类已知缺陷：
-- 单次方差 ±15%（同 input 跑 3 次给不同分）。
-- 任务异质：RAG 看引用忠实度、Agent 看动作序列、通用看回答质量，同一 rubric 必然失真。
-- 已知 bias（Zheng 2023 MT-Bench）：position bias / verbosity bias / self-preference bias。
+**Context**: Default OSS eval tools fail when "pass rate drops below a threshold." In production that gate has three known failure modes:
+- Misses: pass rate holds while cost doubles / latency p95 doubles / safety violations rise.
+- False blocks: LLM eval is stochastic; 92% → 89% may be noise. One false block and everyone `--force`s the gate next time — **the whole system is dead**.
+- No diagnosis: "pass rate dropped 3%" is an alarm, not a root cause; developers still have to dig traces.
 
-**Decision**：四件套 —
-1. **任务分层 evaluator**：RAG → RAGAS；Agent → trajectory eval（tool-call accuracy + step-wise success）；通用 → rubric LLM-as-Judge。`EvaluatorRouter` 按 `eval_case.task_type` 分发。
-2. **多 judge cross-vote**：跨家族（GPT-4 + Claude）防 self-preference bias。
-3. **去偏 wrapper**：position-swap（A/B 互换两次取一致）+ verbosity normalization（按长度归一）。
-4. **self-consistency**：每条 case judge 跑 K=3 次取多数票 + 输出 confidence。
+**Decision**: The CI gate requires three pieces —
+1. **Multi-axis**: quality / cost / latency_p95 / safety in parallel; any axis regression fails.
+2. **Statistical significance**: mean-like axes use a **bootstrap CI (1000 resamples, 95%)**; a true regression requires the CI not to cross 0. p95-like axes in v1 use a threshold first (the interpretation of resampled p95 is subtle; revisit in Phase 17).
+3. **Tag attribution**: every case is tagged; on failure report which tag cluster dropped, not only a global number.
 
-**Rationale**：单 judge 的方差和 bias 是论文/工业界共识，不修就没法做"显著性"判断（gate 会被噪声主导）。任务分层是 evaluator 质量的根本约束 — 不分层，RAG 和 Agent 共用 rubric 必然两边都不准。
+**Rationale**:
+1. Multi-axis covers misses, significance covers false blocks, tag attribution covers unexplained failures — missing any one is a demo, not a product.
+2. Bootstrap is less sensitive to distribution shape than a paired t-test; eval scores are often non-normal (bimodal or truncated), so bootstrap is more stable.
+3. The gate has to be something developers keep, not something they bypass — that is a precondition for the product.
 
-**Consequences**：
-- **评测成本 ×6-10**（多模型 × 多次调用）。这是有意识接受的代价，因为 CI gate 的"可信度"是产品的根本。生产部署时可加 caching / sampling 把成本压回 ×2-3。
-- 复杂度大幅上升 — 多了 `MultiJudge` / `PositionSwapJudge` / `EvaluatorRouter` 等抽象层。Phase 6 必须有专门复现实验脚本验证方差真的从 ±15% 降到 ±3%（不然这个决策站不住脚）。
+**Consequences**:
+- Bootstrap cost is O(N × resamples); hundreds of eval cases × 1000 resamples is milliseconds, negligible vs judge calls.
+- Tag maintenance is pushed to the app (manual or semi-automatic tags on prompts / cases).
+- p95 significance is technical debt, to be revisited in Phase 17.
 
 ---
 
-## ADR-006 · UI 用 Streamlit 不用 React/Next.js
+## ADR-005 · Task-tiered evaluators + multi-judge cross-vote + position-swap + self-consistency
+
+**Date**: 2026-05-14 · **Status**: accepted (Phase 5/6/8/9 to land)
+
+**Context**: Pure LLM-as-Judge (one model, one call, generic rubric) is already baseline in 2026, with at least three known defects:
+- Single-call variance ±15% (same input scored differently across 3 runs).
+- Task heterogeneity: RAG cares about citation faithfulness, Agent about action sequences, generic about answer quality; one rubric necessarily distorts.
+- Known biases (Zheng 2023 MT-Bench): position bias / verbosity bias / self-preference bias.
+
+**Decision**: Four-piece stack —
+1. **Task-tiered evaluators**: RAG → RAGAS; Agent → trajectory eval (tool-call accuracy + step-wise success); generic → rubric LLM-as-Judge. `EvaluatorRouter` dispatches on `eval_case.task_type`.
+2. **Multi-judge cross-vote**: cross-family (GPT-4 + Claude) to fight self-preference bias.
+3. **Debias wrappers**: position-swap (swap A/B twice and require agreement) + verbosity normalization (normalize by length).
+4. **Self-consistency**: judge each case K=3 times, majority vote + confidence.
+
+**Rationale**: Single-judge variance and bias are consensus in papers and industry; without a fix, "significance" is noise-dominated. Task tiering is a fundamental constraint on evaluator quality — without it, RAG and Agent sharing a rubric are both inaccurate.
+
+**Consequences**:
+- **Eval cost ×6–10** (multi-model × multi-call). Accepted on purpose because CI-gate trustworthiness is the product. Production can add caching / sampling to bring cost back to ×2–3.
+- Complexity jumps — extra layers like `MultiJudge` / `PositionSwapJudge` / `EvaluatorRouter`. Phase 6 needs a dedicated reproduction script proving variance actually drops from ±15% to ±3% (otherwise this decision does not stand).
+
+---
+
+## ADR-006 · Streamlit for UI, not React/Next.js
 
 **Date**: 2026-05-14 · **Status**: accepted
 
-**Context**：作为一个 ops / 数据展示型平台，UI 是必须的；但 React 全家桶 ramp-up 成本高，且本项目战略重心在 backend / eval 算法。
+**Context**: As an ops / data-display platform, UI is required; a full React stack has high ramp-up cost, and strategy is backend / eval algorithms.
 
-**Decision**：UI 用 **Streamlit** 单容器，前后端不分离。
+**Decision**: UI is a single **Streamlit** container; no frontend/backend split.
 
-**Rationale**：
-1. Streamlit 写运维向 dashboard 比 React 快 5-10 倍。
-2. 用户群体（ML 工程师 / DevOps）不挑剔交互，能看清数据就行。
-3. 把节省的前端时间投到 evaluator 算法和 cloud 部署上 —  这两块才是简历能讲故事的地方。
-4. 后期如果有 SaaS / 多租户需求，再切 Next.js + 独立 backend，到时数据 API 已经是 REST，前端是可换件。
+**Rationale**:
+1. Streamlit is 5–10× faster than React for ops dashboards.
+2. The audience (ML engineers / DevOps) is not picky about interaction; they need to see the data clearly.
+3. Front-end time saved goes into evaluator algorithms and cloud deploy — those are the resume-worthy pieces.
+4. If SaaS / multi-tenant demand appears later, switch to Next.js + a standalone backend; by then the data API is already REST and the frontend is swappable.
 
-**Consequences**：
-- UI 不能做高度自定义交互（拖拽、复杂表单），但本项目场景用不上。
-- Streamlit session state 模型有点反直觉，需要约定 page 间状态用 query params 传递。
+**Consequences**:
+- UI cannot do highly custom interaction (drag-and-drop, complex forms); this project's scenarios do not need them.
+- Streamlit session state is somewhat unintuitive; page-to-page state should travel via query params.
 
 ---
 
-## ADR-007 · 用 `uv` 做 Python 包管理 / venv
+## ADR-007 · `uv` for Python package management / venv
 
 **Date**: 2026-05-14 · **Status**: accepted
 
-**Context**：Python 包管理 2024-2026 处于换代期 — pip / poetry / pdm / rye / uv 多选项。
+**Context**: Python packaging in 2024–2026 is in a generational shift — pip / poetry / pdm / rye / uv are all options.
 
-**Decision**：用 **uv**（`uv sync`、`uv run`、`uv lock`）。
+**Decision**: Use **uv** (`uv sync`, `uv run`, `uv lock`).
 
-**Rationale**：
-1. 速度比 poetry 快 10-100×，CI 时间显著缩短。
-2. 单二进制，零 Python bootstrap 依赖（不需要先有一个 Python 来装包管理器）。
-3. 与 PEP 621 `pyproject.toml` 标准格式兼容，未来切换到其他工具成本低。
+**Rationale**:
+1. 10–100× faster than poetry; CI time drops materially.
+2. Single binary, zero Python bootstrap dependency (no need for a Python already installed to install the package manager).
+3. Compatible with PEP 621 `pyproject.toml`, so switching tools later is cheap.
 
-**Consequences**：
-- 团队成员需要装 uv（CI 已用 `astral-sh/setup-uv@v3` 解决）。
-- uv 还在快速演进，偶有破坏性更新，需关注 release notes。
-
----
-
-## ADR-008 · LiteLLM 统一 LLM 调用层
-
-**Date**: 2026-05-14 · **Status**: accepted（Phase 5 待引入）
-
-**Context**：Judge 需要跨家族调多个模型（GPT-4 + Claude + 可能 Gemini）。直接各家 SDK 写一遍，代码膨胀且难做 cross-vote 抽象。
-
-**Decision**：所有外部 LLM 调用走 **LiteLLM**（`completion()` 统一接口）。
-
-**Rationale**：
-1. 一个接口 100+ provider，加 / 切模型零成本。
-2. 自带 retry / fallback / cost tracking，省去自己写。
-3. CI 测试时可以用 LiteLLM 的 mock / record-replay，避免真烧 API quota。
-4. 直接对应 ADR-005 的 multi-judge cross-vote 需求。
-
-**Consequences**：
-- 多一层抽象，遇到极少数 provider-specific feature（如 Anthropic 的 prompt caching）需要绕一下。
-- 依赖 LiteLLM 维护节奏 — 它非常活跃，目前不是问题。
+**Consequences**:
+- Teammates must install uv (CI already uses `astral-sh/setup-uv@v3`).
+- uv is still evolving quickly; occasional breaking updates mean watching release notes.
 
 ---
 
-## ADR-009 · CI gate 用 mock judge + ephemeral SQLite，真模型走显式手动入口
+## ADR-008 · LiteLLM as the unified LLM call layer
 
-**Date**: 2026-06-11 · **Status**: accepted（Phase 12）
+**Date**: 2026-05-14 · **Status**: accepted (Phase 5 to introduce)
 
-**Context**：Phase 12 把 CI 卡口从静态 fixtures 换成真 judge 流水线（seed reference set → run baseline prompt → run candidate prompt → diff gate）。但 GitHub Actions 上跑真 LLM 有三个坑：(1) 烧 token / 需要把 API key 放进 CI secret；(2) judge 是随机性的，PR 之间的卡口结论会抖、复现难；(3) `evalgate run` 要写库，CI 还得起一个 Postgres service。而本仓库自身的 PR 大多跟 prompt 质量无关（改文档、改 ingest 代码……），用真模型评测它们既贵又会产生无意义的"回归"噪声。
+**Context**: Judges need multiple cross-family models (GPT-4 + Claude + possibly Gemini). Writing each vendor SDK once inflates code and makes cross-vote hard to abstract.
 
-**Decision**：
-- CI 的 `eval-gate` workflow 跑 `EVALGATE_MOCK_LLM=1` —— judge / candidate / ragas 全部走 LiteLLM mock，离线、确定性、零成本。
-- CI 这步的语义是**端到端连通性 smoke**：断言每个 task_type 都产出非 error record、gate 报告含四轴 + RAG/agent quality 子项 + safety 子项；mock 下 baseline/candidate 同集各轴一致 → gate 必过。
-- 真模型评测走显式手动入口：`make ci-gate-real`（本机 Ollama）或 `workflow_dispatch` 去掉 mock。
-- orchestrator（`scripts/phase12_ci_gate.py`）在 CI 用 **ephemeral SQLite**（`Base.metadata.create_all`，不跑 alembic），不依赖 Postgres service。
+**Decision**: All external LLM calls go through **LiteLLM** (unified `completion()` interface).
 
-**Rationale**：
-1. **CI 应该测"流水线没断"，不是"这个 PR 的 prompt 好不好"** —— 后者是 consumer 仓库接入 EvalGate 后、在它们自己的 prompt PR 上才有意义的判断。把两件事分开，CI 才稳。
-2. mock 确定性 = 卡口不会因 judge 抖动随机红 / 绿，团队不会因为"误 block"去关掉卡口（正是 ADR-004 想避免的失败模式）。
-3. 零 token、无需 CI secret，安全面更小。
-4. ephemeral SQLite 让 CI job 无状态、无外部依赖，和各 phase 的 smoke 脚本同构（同一套 dialect-agnostic repository 代码路径，见 ADR-002）。
+**Rationale**:
+1. One interface, 100+ providers; adding / switching models is zero cost.
+2. Built-in retry / fallback / cost tracking; no need to write our own.
+3. CI can use LiteLLM mock / record-replay instead of burning API quota.
+4. Directly supports ADR-005 multi-judge cross-vote.
 
-**Consequences**：
-- CI 不会自动抓真实质量回归 —— 那是 consumer 仓库接入后在它们的 prompt PR 上、或本仓库手动 `make ci-gate-real` 时才发生。退出标准里"改差 prompt → CI fail + 归因"是用真模型在本地复现的（实测 ~140s）。
-- mock judge 恒返 0.5，所以 CI 这步无法验证"显著性判定"本身的正确性 —— 那由 `report/significance.py` 的单测和 Phase 17 的复现实验覆盖。
-- 想在 CI 上真跑模型，需要自备 self-hosted runner + 模型，经 `workflow_dispatch` 去 mock。
+**Consequences**:
+- Extra abstraction layer; rare provider-specific features (e.g. Anthropic prompt caching) need a bypass.
+- Depends on LiteLLM's maintenance pace — it is very active, not a problem today.
 
 ---
 
-## ADR-010 · Shadow Mode 在 SDK 侧打分，rollup 走 on-demand 而非内置 scheduler
+## ADR-009 · CI gate uses mock judge + ephemeral SQLite; real models go through an explicit manual entry point
 
-**Date**: 2026-06-11 · **Status**: accepted（Phase 13）
+**Date**: 2026-06-11 · **Status**: accepted (Phase 12)
 
-**Context**：Shadow Mode 要在生产流量上无害评测 candidate。两个绕不开的设计岔路：(1) 生产没有人工 ground truth，primary / candidate 的分数从哪来、谁来算？(2) "每小时滚动算一次 4 轴 + 报警" 这种周期任务，要不要在服务里塞一个定时器 / 后台 worker？
+**Context**: Phase 12 replaced the CI gate's static fixtures with a real judge pipeline (seed reference set → run baseline prompt → run candidate prompt → diff gate). Running real LLMs on GitHub Actions has three problems: (1) burns tokens / requires API keys in CI secrets; (2) judges are stochastic, so gate conclusions jitter across PRs and are hard to reproduce; (3) `evalgate run` writes a DB, so CI would need a Postgres service. Most PRs in this repo are unrelated to prompt quality (docs, ingest code, …); scoring them with a real model is both expensive and produces meaningless "regression" noise.
 
-**Decision**：
-- **打分放客户端 SDK**：`evalgate.shadow(...)` 命中采样后，后台并发跑 candidate，并复用 `build_judge_stack(primary)` 给 primary / candidate **两边用同一 rubric** 打 reference-free 分，打包成两条 `EvalRecord` 推到 `POST /v1/shadow/observe`。后端只做"写 observation + 按 `candidate_prompt_hash` 聚合"，不跑 judge。
-- **滚动报告 on-demand + 显式 rollup**：`GET /v1/shadow/reports` 实时算窗口内 4 轴（不落库）；`POST /v1/shadow/rollup`（及 `evalgate shadow rollup` CLI）才落一份 `shadow_reports` 快照并触发报警。生产用 cron 调 rollup，服务本身不内置定时器。
+**Decision**:
+- The CI `eval-gate` workflow runs `EVALGATE_MOCK_LLM=1` — judge / candidate / ragas all go through LiteLLM mock: offline, deterministic, zero cost.
+- Semantics of this CI step: **end-to-end connectivity smoke**. Assert every `task_type` produces a non-error record; the gate report includes four axes + RAG/agent quality sub-items + safety sub-items; under mock, baseline and candidate share the same set and every axis agrees → the gate must pass.
+- Real-model eval uses an explicit manual entry: `make ci-gate-real` (local Ollama) or `workflow_dispatch` with mock off.
+- The orchestrator (`scripts/phase12_ci_gate.py`) uses **ephemeral SQLite** in CI (`Base.metadata.create_all`, no alembic) and does not depend on a Postgres service.
 
-**Rationale**：
-1. **后端薄 = 复用最大化**：observe 的 payload 正好是早就为 Phase 13 固化的 `EvalRecord` 契约（见 `core/schemas.py` 注释），滚动聚合直接喂 `gate.decision.build_gate_report`——shadow 与 PR CI **共用一套**四轴 + bootstrap CI + tag 归因 + `axis_breakdown` 子轴，零新统计代码。
-2. **打分天然在调用侧**：SDK 已经为跑 candidate 持有 `PromptSpec` 和 LiteLLM 通道，就地打分省一次"把两段输出回传后端再调一次 judge"的往返，也不必在后端起一个能访问 prompt 配置的 judge worker。
-3. **不背 scheduler 依赖**：1 人天的 phase 引入 APScheduler / 常驻 task 是过度工程；cron 调一个幂等 CLI 更符合"git-native / 配置外置"的项目调性（呼应 ADR-003），且 `compute_shadow_report` 是纯函数、易测。
-4. **绝不阻塞主路径**：fire-and-forget + 1s 超时 + 吞异常，shadow 慢/挂都不影响生产请求——这是 shadow 能上生产的前提。
+**Rationale**:
+1. **CI should test "the pipeline is not broken," not "is this PR's prompt good"** — the latter only matters after a consumer repo adopts EvalGate, on their own prompt PRs. Splitting the two keeps CI stable.
+2. Mock determinism means the gate does not randomly go red / green from judge jitter, so the team will not disable the gate after a false block (exactly the failure mode ADR-004 wants to avoid).
+3. Zero tokens, no CI secrets, smaller security surface.
+4. Ephemeral SQLite makes the CI job stateless and free of external deps, isomorphic with each phase's smoke scripts (same dialect-agnostic repository path; see ADR-002).
 
-**Consequences**：
-- 打分用的是 primary 的 judge 栈：candidate 若想换更严的 rubric 评，需要显式扩展（当前刻意从简，保证两边可比）。
-- on-demand rollup 意味着"多久滚一次"是部署方的运维选择（cron 频率），服务不保证实时；报警延迟 = rollup 周期。
-- SDK 把 LiteLLM judge 调用带进了调用方进程：成本/延迟落在后台 task（不阻塞主路径），但确实是调用方在掏这次 judge 的 token。
-- 后台 task 需要强引用集合（`_BACKGROUND_TASKS`）防 GC——这是 asyncio fire-and-forget 的已知坑，已封装。
-- 报警是自建的 Slack 兼容 webhook（`{"text": ...}` + 无 URL 时降级日志），没有引入 Slack SDK；未来要富文本 / 多通道再扩。
-
----
-
-## ADR-011 · Case 生命周期（status/source）放数据访问层 + 对抗出题 reference-free + hit 用绝对阈值
-
-**Date**: 2026-06-12 · **Status**: accepted（Phase 14）
-
-**Context**：Phase 14 红队自动出题要把 generator-LLM 产的 case 喂进 eval set，但**绝不能让未经人审的 case 进 gate**（否则飞轮会自己污染自己）。三个设计岔路：(1) "pending case 不参与评测"这条安全不变量在哪实现？runner 里加判断，还是更底层？(2) 对抗 case 要不要也生成 gold `expected`？(3) "命中（candidate 被难住了）"怎么定义——相对降幅还是绝对阈值？
-
-**Decision**：
-- **给 `EvalCaseRow` 加 `status`（pending/active/archived）+ `source`（trace/manual/adversarial）两列，安全不变量沉到数据访问层**：把 `eval_set.repository.list_cases` 重构成带 `statuses` 过滤、**默认 `("active",)`**。runner / gate 经 `list_cases` 读 case，因此一行不改就只看到 active；展示类路径（GET 详情 / CLI show）显式传 `statuses=None`。
-- **对抗 case 是 reference-free**：只生成 `input`，不生成 gold `expected`，judge 以 reference-free pointwise 打分。
-- **hit = 绝对阈值**：candidate 最新得分 `< 0.5`（`stats --threshold` 可调），不用"相对某 baseline 降 ≥ X"。
-
-**Rationale**：
-1. **不变量沉到单一数据层 > 在每个调用方加特判**：runner、未来的 sequential gate、任何走 `list_cases` 的消费方都自动获得"pending 不入 gate"保证，不会有人忘记加判断。把规则放在数据最窄的入口是最稳的。
-2. **`source` 让来源可观测**：trace/manual/adversarial 三态让 attribution 和后续分析能区分"人写的"vs"红队出的"vs"线上捞的"；migration 回填 `source='trace'` 保留历史。
-3. **reference-free 省二次人审、且贴合红队本质**：红队价值在"暴露弱点"，不在"给标准答案"。若连 gold 一起生成，gold 本身又得人审一遍（LLM 生成的答案不可信），ROI 为负。judge 走已有的 reference-free pointwise 路径，零新代码。
-4. **绝对阈值跨 run 可比、无 baseline 选取偏差**：相对降幅要先定一个"基线 run"，而基线选谁本身就是噪声源；绝对阈值语义稳定、一眼可解释（"得分低于 0.5 就算被难住"）。
-5. **无向后兼容包袱**：项目处于建设期，直接改 `list_cases` 签名比加一个并行函数干净（呼应"设计整洁 > 向后兼容"的本轮原则）。
-
-**Consequences**：
-- `list_cases` 签名变了（加 `statuses` keyword）：所有调用点要么吃默认 active-only（runner / gate / 大多数），要么显式 `None`（展示类）——已全量审过。
-- mock judge 恒返 0.5，使"得分 < 0.5"在 mock 下天然不触发：phase14 smoke 的确定性头号断言因此改用 **safety 轴回归**（审入的注入 case 给 candidate 引入攻击面），真 hit 留给真模式 + 单测覆盖。这是 mock 评分扁平化的已知代价。
-- 绝对阈值 0.5 是个 magic number：不同任务的"难住"标准可能不同，故做成 `--threshold` 可调，但默认值的合理性依赖 judge 校准（Phase 16 若做 calibration 可再回看）。
-- 生成全程 best-effort（synth 永不抛错 → 可能产出少于 k 条）：换来"红队出题不打断飞轮"，但调用方要容忍"要 10 条可能只回 7 条"。
+**Consequences**:
+- CI does not automatically catch real quality regressions — that happens after a consumer repo integrates, on their prompt PRs, or locally via `make ci-gate-real`. The exit criterion "worse prompt → CI fail + attribution" is reproduced locally with a real model (~140s measured).
+- The mock judge always returns 0.5, so this CI step cannot verify correctness of the significance decision itself — that is covered by unit tests of `report/significance.py` and Phase 17 reproduction experiments.
+- Running a real model in CI requires a self-hosted runner + model, with mock removed via `workflow_dispatch`.
 
 ---
 
-## ADR-012 · Sequential gate：paired 序贯检验 + α-spending（早停 FAIL）/ stochastic curtailment（早停 PASS）、仅对 quality 轴
+## ADR-010 · Shadow Mode scores on the SDK side; rollup is on-demand, not an in-process scheduler
 
-**Date**: 2026-06-12 · **Status**: accepted（Phase 15）
+**Date**: 2026-06-11 · **Status**: accepted (Phase 13)
 
-**Context**：固定-N gate 必须把全部 N 条 case 判完才出结论，judge 调用贵且很多 PR 的好/坏其实"中途就明显了"。要做"边跑边判、证据足够就提前停"，有几个设计岔路：(1) 用什么检验——沿用固定-N 的双样本 bootstrap，还是换配对检验？(2) early-FAIL 边界怎么定才不抬高累积误判率？(3) early-PASS 用什么机制（beta-spending / 简单启发式 / stochastic curtailment）？(4) 序贯决策覆盖哪些轴？
+**Context**: Shadow Mode must evaluate a candidate harmlessly on production traffic. Two unavoidable design forks: (1) production has no human ground truth — where do primary / candidate scores come from, and who computes them? (2) "Every hour, roll a 4-axis report and alert" is a periodic job — should the service embed a timer / background worker?
 
-**Decision**：
-- **paired 参数检验**：baseline 与 candidate 跑同一组有序 case，按 `case_id` 配对、对差值 `d_i` 做单边检验；统计量换到 B-value 尺度（H0 下为独立增量布朗运动）。
-- **early-FAIL 用 Lan-DeMets α-spending**（`obf` 默认 / `pocock`），Armitage-McPherson-Rowe 网格递归求下边界，累积 α=0.05。
-- **early-PASS 用 stochastic curtailment**：条件功效（在最坏可容忍回归 drift 下到 t=1 还能越界的概率）< γ → futile → PASS。
-- **只对 quality 轴序贯**；cost/latency/safety 在停止点对已消费 case 做固定-N 快照，quality 轴判定由 sequential 覆盖（权威），`passed = sequential==PASS ∧ 非 quality 轴全过`。
-- 自实现 `norm_cdf`（`math.erf`）/ `norm_ppf`（Acklam）——环境只有 numpy、无 scipy。
+**Decision**:
+- **Scoring lives in the client SDK**: after `evalgate.shadow(...)` hits sampling, a background task runs the candidate concurrently and reuses `build_judge_stack(primary)` so primary / candidate are scored **with the same rubric**, reference-free. Results pack into two `EvalRecord`s and POST to `/v1/shadow/observe`. The backend only writes observations and aggregates by `candidate_prompt_hash`; it does not run judges.
+- **Rolling reports are on-demand + explicit rollup**: `GET /v1/shadow/reports` computes the 4 axes for the window in real time (not persisted); `POST /v1/shadow/rollup` (and `evalgate shadow rollup` CLI) persists a `shadow_reports` snapshot and fires alerts. Production cron calls rollup; the service itself has no built-in timer.
 
-**Rationale**：
-1. **配对比双样本更有功效，且天然增量**：同一组 case 一一对应，配对消掉 case 难度方差；配对 t 统计量的布朗运动近似满足"每来一条独立更新"，而 bootstrap 既不增量也不利用配对——序贯场景下配对参数检验是对的工具。
-2. **α-spending 是序贯多看不抬 Type-I 的标准答案**：每次 look 只花掉预算的一小片增量 α，累积恰好 0.05；OBF 早期几乎不花（最严、最稳），Pocock 花得更匀（早期略激进）。
-3. **curtailment 比 beta-spending 干净**：curtailment 只会"缩短"运行、永远不会触发 FAIL，所以 Type-I 完全不受 PASS 边界影响——把"省调用"和"误判控制"两件事解耦；beta-spending 会与 α 边界耦合、实现与论证都更重。
-4. **只序贯 quality 是成本与价值的最优点**：每次 judge 调用驱动的就是 quality 分数，省调用的杠杆全在这里；cost/latency/safety 计算便宜，不值得为其做序贯，停止点快照即可，且复用既有 `build_gate_report` 保证数字与固定-N gate 一致。
+**Rationale**:
+1. **Thin backend = max reuse**: the observe payload is the `EvalRecord` contract already frozen for Phase 13 (see comments in `core/schemas.py`). Rolling aggregation feeds `gate.decision.build_gate_report` — shadow and PR CI **share** four axes + bootstrap CI + tag attribution + `axis_breakdown` sub-axes, with zero new stats code.
+2. **Scoring naturally lives at the call site**: the SDK already holds `PromptSpec` and a LiteLLM channel to run the candidate; scoring in place avoids a round-trip of "send both outputs back to the backend and judge again," and avoids standing up a judge worker on the backend that can reach prompt config.
+3. **No scheduler dependency**: introducing APScheduler / a resident task in a 1-person-day phase is over-engineering. Cron calling an idempotent CLI matches the git-native / config-external tone (echoes ADR-003), and `compute_shadow_report` is a pure function, easy to test.
+4. **Never block the hot path**: fire-and-forget + 1s timeout + swallow exceptions. Shadow being slow or down must not affect production requests — that is the precondition for shipping shadow.
 
-**Consequences**：
-- 退出标准靠 Monte Carlo 证明（1000 次/场景）：Type-I ≤ ~0.05、power ≥ 0.8、省调用 ≥ 50%——这些是 load-bearing 测试，不是装饰。
-- **小样本注脚**：正态近似对小 n 的 t 统计量略激进，Pocock 把 α 前置到最早几次 look，n=5 时实测 Type-I ~0.08（略超 0.05）；故默认推荐 OBF，Pocock 的 Type-I 测试用首看 n=10 的现实间隔。这是"用正态边界近似 t 分布"的已知代价。
-- mock judge 恒返 0.5（零方差）使统计 demo 跑不了：phase15 smoke 改走**离线合成**（seeded 正态）而非 mock LLM——与 Phase 14 同款诚实取舍。
-- 无 migration（baseline 复用既有 `eval_results`），但要求 baseline 与 candidate 跑的是同一 eval set 的同一批 case；缺 baseline 分数的 case 不参与配对（被静默排除）。
+**Consequences**:
+- Scoring uses the primary's judge stack: if the candidate should be judged with a stricter rubric, that needs an explicit extension (kept simple on purpose so both sides stay comparable).
+- On-demand rollup means "how often we roll" is an ops choice (cron frequency); the service does not guarantee real-time; alert latency = rollup period.
+- The SDK brings LiteLLM judge calls into the caller process: cost/latency sit on the background task (not the hot path), but the caller still pays those judge tokens.
+- Background tasks need a strong-ref set (`_BACKGROUND_TASKS`) against GC — a known asyncio fire-and-forget pitfall, already encapsulated.
+- Alerts are a homemade Slack-compatible webhook (`{"text": ...}` + log fallback when URL is unset); no Slack SDK. Rich text / multi-channel later.
 
 ---
 
-## ADR-013 · Judge Calibration：校准 `score`（而非 `judge_confidence`）+ 人标存 DB 表 + 读时 Calibrator
+## ADR-011 · Case lifecycle (status/source) in the data-access layer + reference-free adversarial generation + hit as an absolute threshold
 
-**Date**: 2026-06-12 · **Status**: accepted（Phase 16）
+**Date**: 2026-06-12 · **Status**: accepted (Phase 14)
 
-**Context**：希望 judge 的输出"能当概率读"——judge 说 0.8 就该约等于 80% 人工通过率。三个设计岔路：(1) 校准哪个量——`score` 还是启发式 `judge_confidence`？(2) 人工标签（ground truth）存哪——JSON 文件还是 DB 表？(3) 校准在何处施加——eval 时持久化 calibrated score，还是读时变换？
+**Context**: Phase 14 red-team auto-generation must feed generator-LLM cases into the eval set, but **unreviewed cases must never enter the gate** (otherwise the flywheel pollutes itself). Three design forks: (1) Where is the "pending cases do not participate in eval" safety invariant — a check in the runner, or lower? (2) Should adversarial cases also generate gold `expected`? (3) How is a "hit" (candidate was stumped) defined — relative drop vs absolute threshold?
 
-**Decision**：
-- **校准 `score`**：用单参数 temperature scaling `p = sigmoid(logit(score)/T)`，以 `w=1/T` 为变量最小化逻辑 NLL（凸、golden-section 求解，无 scipy/sklearn）。不校准 `judge_confidence`。
-- **人标存新 `human_labels` 表**（migration 0014，软引用 `eval_result_id`，无 FK），而非 JSON 文件。
-- **读时施加**：纯 `Calibrator` 从 `calibration_params.json` 读 T，对原始分数做变换；`eval_results` 的 `score`/`judge_confidence` 保持不可变，不改 runner、不加结果列。
+**Decision**:
+- **Add `status` (pending/active/archived) + `source` (trace/manual/adversarial) to `EvalCaseRow`; sink the safety invariant into the data-access layer**: refactor `eval_set.repository.list_cases` with `statuses` filtering, **default `("active",)`**. Runner / gate read cases via `list_cases`, so they see only active with zero call-site changes; display paths (GET detail / CLI show) pass `statuses=None` explicitly.
+- **Adversarial cases are reference-free**: generate only `input`, not gold `expected`; the judge scores with reference-free pointwise.
+- **Hit = absolute threshold**: candidate's latest score `< 0.5` (`stats --threshold` is tunable), not "relative drop ≥ X vs some baseline."
 
-**Rationale**：
-1. **`score` 才是目标信号**：`judge_confidence`（[multi_judge.py](src/evalgate/judge/multi_judge.py) L68-74）只是个启发式方差代理、本就不声称是概率；"judge 说 0.8 = 80% 通过率"针对的是 score。校准一个本不是概率的量没有意义。
-2. **DB 表 > JSON 文件**：人标能 join `eval_results`、按 run 过滤、可查询，与既有持久化范式一致；更关键的是它**同时是 Phase 17 Cohen's κ（judge vs 人工一致性）的数据源**——一张表喂两个 phase，避免重复造标注存储。软引用（无 FK）让标签在结果/run 删除后存活，沿用 `eval_results.eval_case_id` 的惯例。
-3. **读时变换 > eval 时持久化**：延续 Phase 14/15 "存原始、读时变换"的原则——原始分数不可变，校准曲线随时可重拟合 / 替换而无需重跑 judge；runner 零改动；不引入"哪个是原始分、哪个是校准分"的列歧义。
-4. **temperature scaling 而非 Platt/isotonic**：单参数、凸、需要的标注量最小，是 reliability 校准的标准基线（Guo et al. 2017），契合"人工标注很贵、能少则少"。
+**Rationale**:
+1. **Invariant in a single data layer > special cases at every caller**: runner, a future sequential gate, and any consumer of `list_cases` automatically get "pending does not enter the gate"; nobody can forget the check. The narrowest data entry point is the most stable place for the rule.
+2. **`source` makes provenance observable**: the three states trace/manual/adversarial let attribution and later analysis distinguish human-written vs red-team vs production-harvested; the migration backfills `source='trace'` to preserve history.
+3. **Reference-free skips a second human review and matches red-team nature**: red-team value is exposing weaknesses, not supplying gold answers. Generating gold too would require reviewing those answers (LLM-generated answers are untrustworthy) — negative ROI. The judge uses the existing reference-free pointwise path; zero new code.
+4. **Absolute threshold is comparable across runs with no baseline-selection bias**: a relative drop needs a "baseline run," and that choice is itself a noise source. Absolute threshold has stable semantics and is immediately explainable ("score below 0.5 means stumped").
+5. **No backward-compat baggage**: the project is still being built; changing the `list_cases` signature is cleaner than a parallel function (echoes this round's "clean design > backward compatibility").
 
-**Consequences**：
-- temperature scaling 是**单调**变换：它不会重排 `|score-0.5|`，所以对 BadCase 的价值在于**替换掉** `judge_confidence` 启发式排序（与真实模糊度不相关），而非重排原始分数。badcase 召回对比因此是"校准后不确定度 vs 启发式 confidence"。这是个容易被误读的点，已在 plan / smoke 注明。
-- 需要人工标注闭环（`calibration label`）才能拟合；标注退化（单类 / n<10）时 `fit_temperature` 退回 T=1（恒等），CLI 退出码 2。
-- 当前是**单一全局 T**；params JSON 形状预留了 per-task-type / per-judge 多曲线的扩展空间，但未实现。
-- 新增 matplotlib 依赖（仅 reliability diagram，Agg 懒加载，纯统计路径不触发）。
-- mock judge 恒返 0.5（零信息）使校准 demo 跑不了：phase16 smoke 改走**离线合成**过自信对——与 Phase 14/15 同款诚实取舍。
-
----
-
-## ADR-014 · Cohen's κ（judge vs 人工一致性）复用 `human_labels` + 阈值化判定
-
-**Date**: 2026-07-16 · **Status**: accepted（Phase 17）
-
-**Context**：设计文档的头号 talking point 之一是"judge κ vs 人工 ~0.85，逼近 double-human 上限"。要把它变成能跑出来的数，需要一个 judge 二元判定 vs 人工二元标签的一致性度量。三个岔路：(1) 用什么度量——原始准确率还是 κ？(2) 标签从哪来——新存储还是复用？(3) judge 的"判定"怎么从连续 `score` 得到？
-
-**Decision**：
-- **用 Cohen's κ**：`κ = (p_o − p_e)/(1 − p_e)`，2×2 闭式 + bootstrap CI（重采样配对 1000 次），只依赖 numpy（无 sklearn），放纯引擎 [report/agreement.py](src/evalgate/report/agreement.py)。
-- **复用 `human_labels` 表**：直接 `fetch_scored_labels` 拿 `(score, label)`，零新表、零 migration。
-- **judge 判定 = `score ≥ threshold`**（默认 0.5，`--threshold` 可调）。
-- 可选 `--scope task_type|judge_model` 复用条件分组（ADR-016）出 per-slice κ。
-
-**Rationale**：
-1. **κ 扣掉"碰巧一致"**：judge/人工都倾向说 good 时，raw accuracy 会被多数类灌水；κ 才诚实地回答"judge 能不能替代人工"。这也正是文献里报 double-human κ ~0.85-0.90 的那把尺。
-2. **一表喂两 phase 是 ADR-013 早定的**：`human_labels` 当初就是为"校准 + κ"两用设计的（软引用、可 join、可按 run 过滤），此处兑现，不再造第二套标注存储。
-3. **判定阈值 = gate 通过语义**：gate 本就以"分数过线"定义通过，κ 用同一根线最自洽；阈值可调以适配不同任务的"好"标准。
-
-**Consequences**：
-- κ 依赖决策阈值选取（默认 0.5 与 gate 语义一致，但非普适最优）。
-- mock judge 恒返 0.5（零信息）使 κ demo 跑不了：phase17 smoke 走**离线合成**（seeded、noisy human）——与 Phase 14/15/16 同款诚实取舍。
-- 退化标注（单类）时 κ 无定义，按惯例完全一致返 1 / 否则返 0（已单测覆盖）。
+**Consequences**:
+- `list_cases` signature changed (added `statuses` keyword): every call site either takes the default active-only (runner / gate / most) or passes `None` explicitly (display) — all sites reviewed.
+- Mock judge always returns 0.5, so "score < 0.5" never fires under mock: phase14 smoke's top deterministic assertion therefore uses a **safety-axis regression** (admitted injection cases give the candidate an attack surface); true hits are left to real mode + unit tests. Known cost of flattened mock scores.
+- Absolute 0.5 is a magic number: "stumped" may differ by task, so it is `--threshold`-tunable, but default reasonableness depends on judge calibration (revisit if Phase 16 does calibration).
+- Generation is best-effort throughout (synth never throws → may produce fewer than k cases): that keeps red-team generation from breaking the flywheel, but callers must tolerate "asked for 10, got 7."
 
 ---
 
-## ADR-015 · p95 显著性复盘：平滑 + 样本量守卫 bootstrap（还 ADR-004 的债）
+## ADR-012 · Sequential gate: paired sequential test + α-spending (early-FAIL) / stochastic curtailment (early-PASS), quality axis only
 
-**Date**: 2026-07-16 · **Status**: accepted（Phase 17）
+**Date**: 2026-06-12 · **Status**: accepted (Phase 15)
 
-**Context**：ADR-004 里 p95 轴"v1 先用阈值（重采样的 p95 解释比较微妙，留待 Phase 17 复盘）"、"p95 显著性留了技术债"。技术上，高分位的裸非参 bootstrap 只反复洗那 1–2 个尾部次序统计量 → CI 离散、覆盖率偏低，小样本尤甚。
+**Context**: A fixed-N gate must finish all N cases before deciding; judge calls are expensive, and many PRs are already "obviously good/bad" mid-run. "Score as we go, stop when evidence is enough" has several design forks: (1) which test — keep the fixed-N two-sample bootstrap, or switch to a paired test? (2) how to set the early-FAIL boundary without inflating cumulative Type-I? (3) what mechanism for early-PASS (beta-spending / simple heuristic / stochastic curtailment)? (4) which axes does the sequential decision cover?
 
-**Decision**：在 [report/significance.py](src/evalgate/report/significance.py) 给 `bootstrap_diff_ci` 加两个开关，`latency_p95` 轴启用：
-- **平滑 bootstrap（`smooth=True`）**：每次重采样叠 `N(0, h²)` 核噪声，带宽 Silverman `h = 0.9·σ·n^(−1/5)`，把离散经验 CDF 抹连续。
-- **可靠性守卫（`min_reliable_n`，gate 用 20）**：小于阈值标 `reliable=False` 且强制 `significant=False`——薄尾轴**永不 false-block**。
-- `BootstrapResult` 加 `reliable` / `n_effective`；mean 轴默认不变（`smooth=False, min_reliable_n=1`）。10% 相对容差带保留作 belt-and-suspenders。
+**Decision**:
+- **Paired parametric test**: baseline and candidate run the same ordered case set, paired by `case_id`, one-sided test on differences `d_i`; the statistic is mapped to B-value scale (independent-increment Brownian motion under H0).
+- **Early-FAIL via Lan-DeMets α-spending** (`obf` default / `pocock`); Armitage-McPherson-Rowe grid recursion for the lower boundary; cumulative α=0.05.
+- **Early-PASS via stochastic curtailment**: if conditional power (probability of crossing the boundary by t=1 under the worst tolerable regression drift) < γ → futile → PASS.
+- **Sequential only on the quality axis**; cost/latency/safety take a fixed-N snapshot of consumed cases at the stop point. The quality-axis decision is sequential (authoritative); `passed = sequential==PASS ∧ all non-quality axes pass`.
+- Self-implemented `norm_cdf` (`math.erf`) / `norm_ppf` (Acklam) — the environment has numpy, not scipy.
 
-**Rationale**：
-1. **平滑修分位、守卫修小样本**，正是文献对"分位 bootstrap 不稳"的两条标准修法组合；比 studentized bootstrap 简单（不用估方差的方差）。
-2. **守卫直接对齐 ADR-004 的初心**：CI gate 存在的意义之一就是"不误 block"，一条尾部数据太薄的轴宁可放行也不冤枉 PR。
-3. **默认不变 = 零回归**：mean 轴（quality/cost）行为逐字节保持，改动被 spec 局限在 p95 轴。
+**Rationale**:
+1. **Paired is more powerful than two-sample and naturally incremental**: the same cases pair 1:1, removing case-difficulty variance; the paired-t statistic's Brownian approximation supports "independent update per new case," while bootstrap is neither incremental nor paired — the right tool for sequential.
+2. **α-spending is the standard answer for looking often without inflating Type-I**: each look spends a small increment of the α budget, totaling exactly 0.05. OBF spends almost none early (strictest, most stable); Pocock spends more evenly (slightly more aggressive early).
+3. **Curtailment is cleaner than beta-spending**: curtailment only shortens the run and never triggers FAIL, so Type-I is completely unaffected by the PASS boundary — it decouples "save calls" from "control false FAIL." Beta-spending couples to the α boundary and is heavier to implement and argue.
+4. **Sequential-only-on-quality is the cost/value optimum**: every judge call is what drives the quality score; all call-saving leverage is there. Cost/latency/safety are cheap to compute, not worth sequential machinery; a stop-point snapshot plus existing `build_gate_report` keeps numbers consistent with the fixed-N gate.
 
-**Consequences**：
-- 平滑带宽是经验法则、并让 CI 偏宽（偏保守）——但保守正是 gate 想要的方向。
-- 小于 20 条 per-side 的 eval set 上 latency 轴不再可能判显著（会被 `reliable=False` 挡下）；这是有意的"数据不足不下结论"。
-- ADR-004 的 p95 债由此关闭。
-
----
-
-## ADR-016 · 条件校准：per-`task_type` / per-`judge_model` 温度 + 读时分组选 T
-
-**Date**: 2026-07-16 · **Status**: accepted（Phase 17，落实 ADR-013 预留的扩展位）
-
-**Context**：ADR-013 落地了**单一全局 T**，并明说"params JSON 形状预留了 per-task-type / per-judge 多曲线的扩展空间，但未实现"。而 judge 常在一类任务过自信、另一类却校准良好，单一 T 会在分组间留 ECE。
-
-**Decision**：
-- `Calibrator` 泛化成带 `scope` + `group_temperatures` 的温度族：`transform(score, group)` 按分组选 T，未见/薄分组回落全局 T；`scope="global"` 逐字节等同 Phase 16。
-- 拟合先在全体拟合全局 T（兜底），再对每个数据充足（沿用 `n ≥ 10` + 双类）的分组各拟合一条；薄分组不给独立曲线。
-- **分组信息读时 join**：`task_type ← eval_cases`、`judge_model ← eval_runs`；`eval_results` 不加列。
-- `fit --scope` / `report --scope` / `badcase` 透传；params JSON 加 `scope` + `groups`（空即等价旧文件）。
-
-**Rationale**：
-1. **异质性主要来自 task_type 与 judge_model**，也是标注量能撑住的粒度；(task×judge) 笛卡尔积会把每格摊薄到拟合不动，故只做两条独立轴 + 全局兜底。
-2. **延续"存原始、读时变换"（ADR-012/013）**：不加结果列，曲线随时可换 scope 重拟合，runner 零改动。
-3. **严格向后兼容**：旧的全局 params 文件、旧的 `Calibrator(temperature=T)` 调用、badcase 全局路径全部不变——新行为纯 opt-in。
-
-**Consequences**：
-- badcase 读时多一两条 `IN (...)` 查询以取分组键（相对 judge 调用可忽略）。
-- 标注稀疏时多数分组回落全局 T，此时等价 Phase 16（诚实的降级，不是 bug）。
-- params JSON 形状变了（加 `scope`/`groups`），但 `Calibrator.from_dict` 同时吃新旧两种形状。
+**Consequences**:
+- Exit criteria are proven by Monte Carlo (1000 runs / scenario): Type-I ≤ ~0.05, power ≥ 0.8, call savings ≥ 50% — these are load-bearing tests, not decoration.
+- **Small-sample footnote**: the normal approximation is slightly aggressive for small-n t statistics; Pocock front-loads α onto the earliest looks, so at n=5 measured Type-I is ~0.08 (slightly over 0.05). Default recommendation is therefore OBF; Pocock's Type-I tests use a realistic first-look gap of n=10. Known cost of approximating a t distribution with a normal boundary.
+- Mock judge always returns 0.5 (zero variance), so the statistical demo cannot run: phase15 smoke uses **offline synthetic** (seeded normals) instead of mock LLM — the same honest tradeoff as Phase 14.
+- No migration (baseline reuses existing `eval_results`), but baseline and candidate must run the same batch of cases from the same eval set; cases missing a baseline score are silently excluded from pairing.
 
 ---
 
-## ADR-017 · 云部署：ECS Fargate + RDS，Terraform 起栈，GitHub OIDC 发布
+## ADR-013 · Judge Calibration: calibrate `score` (not `judge_confidence`) + human labels in a DB table + read-time Calibrator
 
-**Date**: 2026-07-16 · **Status**: accepted（Phase 18）
+**Date**: 2026-06-12 · **Status**: accepted (Phase 16)
 
-**Context**：设计文档一直把部署写成"Docker Compose（demo）/ AWS ECS + RDS（生产 demo）"，但只落地了 Compose。云那半是简历的明确缺失项（"学 Cloud"），需要把它变成**可 `terraform apply` 起来、可 CI 一键发布**的真栈。几个岔路：容器编排选什么（ECS vs EKS vs 裸 EC2）、网络怎么布（省钱 vs 教科书私网）、镜像怎么发（长期密钥 vs OIDC）、迁移在哪跑（服务启动时 vs 一次性任务）。
+**Context**: We want judge output to be readable as a probability — a judge saying 0.8 should mean roughly 80% human pass rate. Three design forks: (1) which quantity to calibrate — `score` or heuristic `judge_confidence`? (2) where to store human labels (ground truth) — JSON file or DB table? (3) where to apply calibration — persist a calibrated score at eval time, or transform at read time?
 
-**Decision**：
-- **编排 = ECS Fargate**（无服务器容器），栈由 **Terraform** 起：VPC + 2 AZ public subnet、ALB（`/healthz` 健康检查）、ECS 服务/任务定义、RDS Postgres 16、Secrets Manager、IAM。见 [deploy/terraform/](deploy/terraform/)。
-- **网络走单层 public subnet**：Fargate 任务带公网 IP（SG 只放行 ALB），RDS `publicly_accessible=false` + SG 只放行 app——**刻意不建 NAT gateway**（省 ~$32/mo）。
-- **镜像多阶段 + 非 root + HEALTHCHECK**：builder 装依赖、runtime 只搬 venv/源码，`appuser`(uid 10001) 运行，`docker-entrypoint.sh` 分 `serve`/`migrate` 两命令。
-- **发布走 GitHub OIDC**：`.github/workflows/deploy.yml` 用 OIDC 假借 IAM role（零长期 AK/SK），build→push ECR→`update-service --force-new-deployment`。OIDC provider/role 由 `create_github_oidc` 开关在 Terraform 里可选建。
-- **迁移默认随服务任务启动**（`RUN_MIGRATIONS=true`，`desired_count=1` 无竞态）；`desired_count>1` 时改用一次性 `migrate` ECS 任务（`deploy/scripts/run_migrations.sh`）。
-- **secret 注入**：DATABASE_URL 由 RDS endpoint + 随机口令在 Terraform 内组装、存 Secrets Manager，ECS 以 `secrets` 注入——明文 DSN 不落任务定义/state 输出；judge provider key 只在提供时才建 secret。
+**Decision**:
+- **Calibrate `score`**: single-parameter temperature scaling `p = sigmoid(logit(score)/T)`, minimize logistic NLL in `w=1/T` (convex, golden-section search, no scipy/sklearn). Do not calibrate `judge_confidence`.
+- **Human labels live in a new `human_labels` table** (migration 0014, soft reference to `eval_result_id`, no FK), not a JSON file.
+- **Apply at read time**: a pure `Calibrator` reads T from `calibration_params.json` and transforms raw scores; `eval_results.score` / `judge_confidence` stay immutable; no runner changes, no extra result columns.
 
-**Rationale**：
-1. **Fargate 比 EKS 简单一个数量级**：无 node/控制面运维，按任务计费，恰好匹配"单服务 demo + 简历讲得清"的目标；ECS 也是 AWS 一等公民（对齐 ADR-002 选 RDS 的同款"托管优先"思路）。
-2. **省 NAT 是清醒的 demo 取舍**：教科书做法是 app/RDS 进私网 + NAT 出网，但 NAT 常驻计费且对单服务 demo 无实质安全增益（SG 已把入站锁到 ALB/app）；README 明写生产应切私网 + NAT 或 VPC endpoint。
-3. **OIDC 是 2024 年后 CI→云的标准姿势**：仓库里不存任何长期 AWS 密钥，role 的 trust policy 用 `sub = repo:owner/repo:*` 限定，权限窄到只够 ECR push + ECS 发布 + PassRole。
-4. **多阶段非 root 镜像**是容器安全基线；`/healthz`（已存在）同时喂容器 HEALTHCHECK、ALB target group、ECS container healthCheck 三处，一个探针三处复用。
-5. **迁移随任务启动**让"apply 完即可用"（单任务无竞态），多任务再用一次性任务——两条路都留，按 `desired_count` 选。
+**Rationale**:
+1. **`score` is the target signal**: `judge_confidence` ([multi_judge.py](src/evalgate/judge/multi_judge.py) L68-74) is only a heuristic variance proxy and never claimed to be a probability; "judge says 0.8 = 80% pass rate" is about score. Calibrating a quantity that is not a probability is meaningless.
+2. **DB table > JSON file**: labels can join `eval_results`, filter by run, and be queried, matching the existing persistence model. More importantly, the table is **also the data source for Phase 17 Cohen's κ (judge vs human agreement)** — one table feeds two phases, avoiding a second label store. Soft references (no FK) let labels survive result/run deletes, following the `eval_results.eval_case_id` convention.
+3. **Read-time transform > persist-at-eval**: continues the Phase 14/15 "store raw, transform on read" principle — raw scores are immutable; the calibration curve can be refit / replaced without re-running judges; zero runner changes; no column ambiguity of "which is raw, which is calibrated."
+4. **Temperature scaling rather than Platt/isotonic**: one parameter, convex, minimal labels required — the standard reliability-calibration baseline (Guo et al. 2017), matching "human labels are expensive, use as few as possible."
 
-**Consequences**：
-- 生产镜像仍带 streamlit/matplotlib/ragas/presidio 等 API 运行期用不到的重依赖（沿用现有单一依赖集，未拆 extras）——镜像偏大，列为已知代价 / 后续可拆 optional-deps 瘦身。
-- public-subnet 省钱布局不是生产终局；已在 README/ADR 标注切私网 + NAT 的升级路径。
-- ALB 目前只有 `:80`（HTTP）；TLS 需 ACM 证书 + 域名，留作下一步（变量位已预留思路）。
-- Terraform state 默认本地；README 给了切 S3 + DynamoDB lock 的 backend 注释，真用要先配远端 state。
-- 未在真实 AWS 账号 apply（本轮无云凭证、避免起费用）；离线验证到 `terraform validate` 通过 + `fmt` 干净 + 镜像/compose/脚本语法校验，真 apply 时才会产生费用。
+**Consequences**:
+- Temperature scaling is a **monotonic** transform: it does not reorder `|score-0.5|`, so BadCase value is **replacing** the `judge_confidence` heuristic ranking (uncorrelated with true ambiguity), not reordering raw scores. Bad-case recall comparison is therefore "calibrated uncertainty vs heuristic confidence." Easy to misread; already noted in plan / smoke.
+- Fitting needs a human-label loop (`calibration label`); on degenerate labels (single class / n<10) `fit_temperature` falls back to T=1 (identity) and the CLI exits 2.
+- Currently a **single global T**; the params JSON shape reserves room for per-task-type / per-judge curves, not yet implemented.
+- New matplotlib dependency (reliability diagram only, Agg lazy-loaded; pure stats path does not trigger it).
+- Mock judge always returns 0.5 (zero information), so the calibration demo cannot run: phase16 smoke uses **offline synthetic** overconfident pairs — same honest tradeoff as Phase 14/15.
+
+---
+
+## ADR-014 · Cohen's κ (judge vs human agreement) reuses `human_labels` + thresholded decisions
+
+**Date**: 2026-07-16 · **Status**: accepted (Phase 17)
+
+**Context**: One of the design doc's top talking points is "judge κ vs human ~0.85, approaching the double-human ceiling." Turning that into a runnable number needs an agreement metric between a binary judge decision and a binary human label. Three forks: (1) which metric — raw accuracy or κ? (2) where labels come from — new storage or reuse? (3) how does the judge's "decision" come from continuous `score`?
+
+**Decision**:
+- **Use Cohen's κ**: `κ = (p_o − p_e)/(1 − p_e)`, closed-form 2×2 + bootstrap CI (resample pairs 1000 times), numpy only (no sklearn), in the pure engine [report/agreement.py](src/evalgate/report/agreement.py).
+- **Reuse the `human_labels` table**: `fetch_scored_labels` returns `(score, label)` directly; zero new tables, zero migrations.
+- **Judge decision = `score ≥ threshold`** (default 0.5, `--threshold` tunable).
+- Optional `--scope task_type|judge_model` reuses conditional grouping (ADR-016) for per-slice κ.
+
+**Rationale**:
+1. **κ subtracts chance agreement**: when both judge and human tend to say good, raw accuracy is inflated by the majority class; κ honestly answers "can the judge replace a human." That is the same ruler used in the literature for double-human κ ~0.85–0.90.
+2. **One table, two phases was decided in ADR-013**: `human_labels` was designed for both calibration and κ (soft refs, joinable, filterable by run). This entry cashes that in; no second label store.
+3. **Decision threshold = gate pass semantics**: the gate already defines pass as "score above the line"; κ using the same line is most coherent. The threshold is tunable for different tasks' notion of "good."
+
+**Consequences**:
+- κ depends on the decision threshold (default 0.5 matches gate semantics, but is not universally optimal).
+- Mock judge always returns 0.5 (zero information), so the κ demo cannot run: phase17 smoke uses **offline synthetic** (seeded, noisy human) — same honest tradeoff as Phase 14/15/16.
+- On degenerate labels (single class) κ is undefined; by convention return 1 if complete agreement else 0 (unit-tested).
+
+---
+
+## ADR-015 · p95 significance revisit: smoothed + sample-size-guarded bootstrap (pays ADR-004 debt)
+
+**Date**: 2026-07-16 · **Status**: accepted (Phase 17)
+
+**Context**: ADR-004 said the p95 axis would "use a threshold in v1 (interpretation of resampled p95 is subtle; revisit in Phase 17)" and left "p95 significance as technical debt." Technically, a raw nonparametric bootstrap of a high quantile just reshuffles those 1–2 tail order statistics → discrete CIs, low coverage, worse on small samples.
+
+**Decision**: Add two switches to `bootstrap_diff_ci` in [report/significance.py](src/evalgate/report/significance.py), enabled for the `latency_p95` axis:
+- **Smoothed bootstrap (`smooth=True`)**: each resample adds `N(0, h²)` kernel noise, Silverman bandwidth `h = 0.9·σ·n^(−1/5)`, so the discrete empirical CDF is smeared continuous.
+- **Reliability guard (`min_reliable_n`, 20 for the gate)**: below the threshold mark `reliable=False` and force `significant=False` — a thin-tailed axis **never false-blocks**.
+- `BootstrapResult` gains `reliable` / `n_effective`; mean axes stay default (`smooth=False, min_reliable_n=1`). The 10% relative tolerance band remains as belt-and-suspenders.
+
+**Rationale**:
+1. **Smoothing fixes the quantile, the guard fixes small n** — the two standard literature patches for "quantile bootstrap is unstable"; simpler than a studentized bootstrap (no need to estimate the variance of the variance).
+2. **The guard aligns directly with ADR-004's original intent**: one reason the CI gate exists is "do not false-block"; an axis with too-thin tail data would rather pass than wrongly fail a PR.
+3. **Defaults unchanged = zero regression**: mean axes (quality/cost) stay byte-for-byte; the change is spec-limited to the p95 axis.
+
+**Consequences**:
+- Smoothing bandwidth is a rule of thumb and widens the CI (conservative) — conservatism is the direction the gate wants.
+- Eval sets with fewer than 20 cases per side can no longer call the latency axis significant (blocked by `reliable=False`); intentional "no conclusion without enough data."
+- ADR-004's p95 debt is thereby closed.
+
+---
+
+## ADR-016 · Conditional calibration: per-`task_type` / per-`judge_model` temperatures + read-time group T selection
+
+**Date**: 2026-07-16 · **Status**: accepted (Phase 17, implements the extension slot reserved in ADR-013)
+
+**Context**: ADR-013 shipped a **single global T** and explicitly said "the params JSON shape reserves room for per-task-type / per-judge curves, not yet implemented." Judges are often overconfident on one task class and well-calibrated on another; a single T leaves ECE between groups.
+
+**Decision**:
+- `Calibrator` generalizes to a temperature family with `scope` + `group_temperatures`: `transform(score, group)` picks T by group; unseen/thin groups fall back to global T; `scope="global"` is byte-for-byte Phase 16.
+- Fit global T on all data first (fallback), then a curve per group with enough data (reuse `n ≥ 10` + both classes); thin groups get no independent curve.
+- **Group keys joined at read time**: `task_type ← eval_cases`, `judge_model ← eval_runs`; no extra `eval_results` columns.
+- `fit --scope` / `report --scope` / `badcase` pass through; params JSON adds `scope` + `groups` (empty ≡ old file).
+
+**Rationale**:
+1. **Heterogeneity mainly comes from `task_type` and `judge_model`**, which is also the granularity labels can support; a (task×judge) Cartesian product would thin each cell below what we can fit, so two independent axes + global fallback.
+2. **Continue "store raw, transform on read" (ADR-012/013)**: no result columns; curves can change scope and refit anytime; zero runner changes.
+3. **Strict backward compatibility**: old global params files, old `Calibrator(temperature=T)` calls, and the global badcase path all stay — new behavior is purely opt-in.
+
+**Consequences**:
+- Badcase read path adds one or two `IN (...)` queries for group keys (negligible vs judge calls).
+- When labels are sparse, most groups fall back to global T, equivalent to Phase 16 (honest degradation, not a bug).
+- Params JSON shape changed (added `scope`/`groups`), but `Calibrator.from_dict` accepts both old and new shapes.
+
+---
+
+## ADR-017 · Cloud deploy: ECS Fargate + RDS, Terraform stack, GitHub OIDC publish
+
+**Date**: 2026-07-16 · **Status**: accepted (Phase 18)
+
+**Context**: The design doc has long described deploy as "Docker Compose (demo) / AWS ECS + RDS (production demo)," but only Compose landed. The cloud half is an explicit resume gap ("learn Cloud"); it needs to become a real stack you can `terraform apply` and publish from CI in one shot. Forks: which container orchestration (ECS vs EKS vs bare EC2), how to lay out the network (cheap vs textbook private), how to publish images (long-lived keys vs OIDC), where migrations run (on service start vs a one-shot task).
+
+**Decision**:
+- **Orchestration = ECS Fargate** (serverless containers). The stack is **Terraform**: VPC + 2 AZ public subnets, ALB (`/healthz` health check), ECS service/task definition, RDS Postgres 16, Secrets Manager, IAM. See [deploy/terraform/](deploy/terraform/).
+- **Network is a single public-subnet layer**: Fargate tasks get a public IP (SG allows only the ALB); RDS `publicly_accessible=false` + SG allows only the app — **deliberately no NAT gateway** (saves ~$32/mo).
+- **Multi-stage image + non-root + HEALTHCHECK**: builder installs deps, runtime copies only venv/source, runs as `appuser` (uid 10001), `docker-entrypoint.sh` splits `serve`/`migrate`.
+- **Publish via GitHub OIDC**: `.github/workflows/deploy.yml` assumes an IAM role via OIDC (zero long-lived AK/SK), build→push ECR→`update-service --force-new-deployment`. OIDC provider/role is optionally created in Terraform behind `create_github_oidc`.
+- **Migrations default to running on service-task start** (`RUN_MIGRATIONS=true`, `desired_count=1` has no race); when `desired_count>1` use a one-shot `migrate` ECS task (`deploy/scripts/run_migrations.sh`).
+- **Secret injection**: DATABASE_URL is assembled in Terraform from the RDS endpoint + a random password, stored in Secrets Manager, injected into ECS as `secrets` — plaintext DSN never lands in the task definition / state outputs; a judge provider key secret is created only if supplied.
+
+**Rationale**:
+1. **Fargate is an order of magnitude simpler than EKS**: no node/control-plane ops, billed per task, matches "single-service demo + explainable on a resume." ECS is also first-class AWS (same "managed first" thinking as ADR-002 choosing RDS).
+2. **Skipping NAT is a clear-eyed demo tradeoff**: textbook is app/RDS in private subnets + NAT for egress, but NAT is always-on billing and adds no real security for a single-service demo (SG already locks inbound to ALB/app). README states production should move to private + NAT or VPC endpoints.
+3. **OIDC is the post-2024 standard for CI→cloud**: the repo stores no long-lived AWS keys; the role trust policy is scoped with `sub = repo:owner/repo:*`; permissions are narrowed to ECR push + ECS publish + PassRole.
+4. **Multi-stage non-root image** is container-security baseline; `/healthz` (already exists) feeds container HEALTHCHECK, ALB target group, and ECS container healthCheck — one probe, three consumers.
+5. **Migrations on task start** make "apply then ready" work (no race at one task); multi-task uses a one-shot task — both paths exist, chosen by `desired_count`.
+
+**Consequences**:
+- The production image still includes heavy deps the API runtime does not need (streamlit/matplotlib/ragas/presidio — existing single dependency set, no extras split) — larger image, known cost / later optional-deps slim-down.
+- Public-subnet cheap layout is not the production end state; README/ADR already note the upgrade path to private + NAT.
+- ALB currently only `:80` (HTTP); TLS needs an ACM cert + domain, left as a next step (variable slots already sketched).
+- Terraform state defaults to local; README comments a backend switch to S3 + DynamoDB lock; real use needs remote state first.
+- Not applied against a real AWS account this round (no cloud credentials, avoid spinning up cost); offline verification goes through `terraform validate` + clean `fmt` + image/compose/script syntax checks. A real apply is what incurs cost.

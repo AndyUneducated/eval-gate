@@ -1,18 +1,18 @@
-# Phase 11 技术方案 · Streamlit Ops UI
+# Phase 11 technical design · Streamlit Ops UI
 
-## 一句话
+## In one sentence
 
-独立包 `src/evalgate/ui/` 是一个 Streamlit 多 page app，**只通过 HTTP 调现有 `/v1/*` REST API，绝不直连数据库**，让运维在浏览器走完"看 trace → 选 case promote 进 eval set → 跑评测 → 看 4 轴 + tag 归因 + sub-axes（子指标/子轴）报告"的全流程。
+The standalone package `src/evalgate/ui/` is a Streamlit multi-page app that **only calls the existing `/v1/*` REST API over HTTP, never the database directly**, so ops can run the full loop in a browser: inspect traces → promote cases into an eval set → run evals → read the 4-axis + tag attribution + sub-axes report.
 
-## 架构：UI 是"又一个 API 消费方"
+## Architecture: the UI is "just another API consumer"
 
-UI 进程与已有 FastAPI 服务**完全解耦**——它是和 CLI、CI 平级的另一个客户端，所有数据都经同一份 REST API 取得。
+The UI process is **fully decoupled** from the existing FastAPI service—it is a peer of the CLI and CI, another client. All data goes through the same REST API.
 
 ```mermaid
 flowchart LR
-  User["Browser"] --> UI["Streamlit app（src/evalgate/ui）"]
-  UI -->|"HTTP /v1/*"| Client["EvalGateClient<br/>(httpx.Client, 同步)"]
-  Client --> API["FastAPI app（已有）"]
+  User["Browser"] --> UI["Streamlit app (src/evalgate/ui)"]
+  UI -->|"HTTP /v1/*"| Client["EvalGateClient<br/>(httpx.Client, sync)"]
+  Client --> API["FastAPI app (existing)"]
   API --> DB[("Postgres / SQLite")]
   subgraph Pages["pages/"]
     P1["1. Traces"]
@@ -23,70 +23,70 @@ flowchart LR
   UI -.-> Pages
 ```
 
-为什么坚持 HTTP-only、不直连 DB：
+Why HTTP-only, no direct DB:
 
-1. **单一真理源**：同一份 API 给 CLI、CI、UI 用，行为一致，不会出现"UI 看到的和 gate 算的不一样"。
-2. **避开 asyncio 摩擦**：Streamlit 的执行模型（每次交互从头重跑 page 脚本）对长持 SQLAlchemy async session 很不友好；HTTP + 同步 `httpx.Client` 最省心。
-3. **可复现**：任何 UI 行为都能用 `curl` / `httpx` 直接重放同一个请求来调试。
+1. **Single source of truth**: the same API serves CLI, CI, and UI, so behavior is consistent—the UI cannot show something the gate did not compute.
+2. **Avoid asyncio friction**: Streamlit's execution model (rerun the page script from the top on every interaction) is hostile to long-held SQLAlchemy async sessions; HTTP + a sync `httpx.Client` is the least painful.
+3. **Reproducibility**: any UI action can be replayed with `curl` / `httpx` against the same request for debugging.
 
-所有 URL / 参数逻辑收敛在 thin wrapper `evalgate.ui.api_client.EvalGateClient`（基于**同步** `httpx.Client`），page 文件只调 `client.xxx()` 方法，不散装 URL；非 2xx 统一抛 `EvalGateAPIError`（带 status + 解析后的 body），page 用 `st.error()` 渲染。
+All URL / parameter logic lives in the thin wrapper `evalgate.ui.api_client.EvalGateClient` (sync `httpx.Client`). Page files only call `client.xxx()` methods and do not assemble URLs. Non-2xx responses raise `EvalGateAPIError` (status + parsed body); pages render with `st.error()`.
 
-## 四个 page 的核心交互
+## Core interactions of the four pages
 
 ```mermaid
 flowchart LR
-  T["1. Traces<br/>筛选 + span tree"] -->|"Promote to eval set"| ES["2. Eval Sets<br/>建集 / 看 cases"]
-  ES -->|"作为评测对象"| R["3. Reports<br/>选 baseline/candidate run → Run gate"]
-  G["4. Generate Trace<br/>模板造 demo trace"] -->|"seed-trace"| T
-  R --> Rep["GateReport: 4 轴卡片 + sub-axes 表 + tag 归因"]
+  T["1. Traces<br/>filter + span tree"] -->|"Promote to eval set"| ES["2. Eval Sets<br/>create set / view cases"]
+  ES -->|"as eval target"| R["3. Reports<br/>pick baseline/candidate run → Run gate"]
+  G["4. Generate Trace<br/>template demo traces"] -->|"seed-trace"| T
+  R --> Rep["GateReport: 4 axis cards + sub-axes table + tag attribution"]
 ```
 
-- **Traces** — 顶部筛选条（`limit` / `service` / `since`）→ trace 表 → 点行进 detail → 右栏 span tree（缩进 + JSON expander）→ `Promote to eval set` 下拉调 `add_case_from_trace`。
-- **Eval Sets** — `Create new set` 表单；下拉选 set → cases 表（id / task_type / tags / source_trace_id）。
-- **Reports** — 选 eval_set → 拉 runs（最新在前）→ 双下拉选 `baseline_run` / `candidate_run` → `Run gate`：拉两组 records → `POST /v1/evals/run` → 拿 `GateReport`，渲染 4 轴 metric 行（quality / cost / latency_p95 / safety，passed 绿/红）、每轴下挂 sub-axes 展开表（quality 下挂 RAGAS / agent 子项；safety 下挂 4 项 PII / jailbreak 比率）、按 worst delta 排序的 tag 归因表，顶部直接展示 `report.summary`。
-- **Generate Trace** — sidebar 选模板（`rag` / `agent` / `safety` / `plain`）→ 表单填字段 → `POST /v1/dev/seed-trace` 在浏览器里直接造 demo trace，守住"UI 只过 `/v1/*` HTTP"的边界。
+- **Traces** — top filter bar (`limit` / `service` / `since`) → trace table → click a row for detail → right-hand span tree (indent + JSON expander) → `Promote to eval set` dropdown calls `add_case_from_trace`.
+- **Eval Sets** — `Create new set` form; dropdown selects a set → cases table (id / task_type / tags / source_trace_id).
+- **Reports** — pick eval_set → load runs (newest first) → two dropdowns for `baseline_run` / `candidate_run` → `Run gate`: load both record sets → `POST /v1/evals/run` → take `GateReport`, render 4 axis metric rows (quality / cost / latency_p95 / safety, passed green/red), expand sub-axes tables under each axis (RAGAS / agent items under quality; 4 PII / jailbreak rates under safety), a tag attribution table sorted by worst delta, and `report.summary` at the top.
+- **Generate Trace** — sidebar template (`rag` / `agent` / `safety` / `plain`) → form fields → `POST /v1/dev/seed-trace` to mint a demo trace in the browser, keeping the "UI only talks `/v1/*` HTTP" boundary.
 
-## 技术选型与抉择
+## Technical choices
 
-### UI 框架：Streamlit 而非 React/Next.js（ADR-006）
+### UI framework: Streamlit, not React/Next.js (ADR-006)
 
-- **背景**：这是运维向数据展示工具，项目战略重心在 backend / eval 算法。
-- **选择**：Streamlit 单容器，前后端不分离。
-- **收益**：写 dashboard 比 React 快 5–10 倍；目标用户（ML 工程师 / DevOps）只要看清数据；省下的前端时间投到 evaluator 与部署。
-- **代价**：做不了高度自定义交互（复杂拖拽），但本场景用不上；Streamlit session state 模型略反直觉。后期若有 SaaS / 多租户需求再切 Next.js——因为数据层已是 REST，前端是可换件。
+- **Context**: this is an ops-facing data display tool; the project's strategic weight is backend / eval algorithms.
+- **Choice**: Streamlit in a single container, no frontend/backend split.
+- **Gain**: dashboards are 5–10× faster to write than React; the audience (ML engineers / DevOps) needs to see the data clearly; time saved on frontend goes to evaluators and deploy.
+- **Cost**: highly custom interaction (complex drag-and-drop) is out of reach, which this scenario does not need; Streamlit session state is a bit unintuitive. If SaaS / multi-tenant shows up later, switch to Next.js—the data layer is already REST, so the frontend is swappable.
 
-### Reports 的 baseline / candidate：UI 自由组合，不在 server 端钦定基线
+### Reports baseline / candidate: UI composes freely; the server does not designate a baseline
 
-UI 提供两个 run 下拉，拉两组 records 后 `POST /v1/evals/run` 得报告。**好处**是不在服务端硬编码"谁是基线"这种隐含约定，组合自由；GateReport JSON 直接复用，不重建 schema。
+The UI offers two run dropdowns, loads both record sets, then `POST /v1/evals/run` for the report. **Benefit**: no server-side implicit "who is baseline" convention; combinations are free. GateReport JSON is reused as-is; no new schema.
 
-### 新增最小 REST 增量，而非给 UI 开 DB 后门
+### Minimal REST increments, not a DB backdoor for the UI
 
-eval_runs 原本没有 list/detail REST，于是新增三个只读端点（[`api/routers/evals.py`](../src/evalgate/api/routers/evals.py)）：
+eval_runs had no list/detail REST, so three read-only endpoints were added ([`api/routers/evals.py`](../src/evalgate/api/routers/evals.py)):
 
 ```text
-GET /v1/runs?eval_set_id=&limit=   # list runs（最新在前）
-GET /v1/runs/{run_id}              # 单个 run meta
-GET /v1/runs/{run_id}/records      # per-case EvalRecord 形状
+GET /v1/runs?eval_set_id=&limit=   # list runs (newest first)
+GET /v1/runs/{run_id}              # single run meta
+GET /v1/runs/{run_id}/records      # per-case EvalRecord shape
 ```
 
-service 层复用 `judge.persistence` 的 `list_runs` / `list_records` helper，把 `EvalResultRow` 映射成已有的 `EvalRecord`（`axis_breakdown` 直接透传）——而不是为 UI 单开一条直连 DB 的路径，保持"UI 永远走 API"的边界纯净。
+The service layer reuses `judge.persistence` helpers `list_runs` / `list_records`, mapping `EvalResultRow` to the existing `EvalRecord` (`axis_breakdown` passed through)—instead of a UI-only direct-DB path, keeping the "UI always goes through the API" boundary clean.
 
-### 不做认证 / 实时刷新
+### No auth / no live refresh
 
-v1 是本机运维工具，绑 `127.0.0.1`，不做 auth / RBAC（后续要远程再上反向代理）；不做 SSE / 实时刷新，用手动 `Refresh` 按钮 + `cache_data(ttl=)`。这些都是"先满足 ops 自用、把复杂度留给真有需求时"的有意取舍。
+v1 is a local ops tool, bound to `127.0.0.1`, with no auth / RBAC (add a reverse proxy if remote access is needed later); no SSE / live refresh—manual `Refresh` plus `cache_data(ttl=)`. These are intentional: satisfy ops self-use first, leave complexity for when it is actually needed.
 
-### 测试策略：mock HTTP，不启 Streamlit runtime
+### Test strategy: mock HTTP, do not start the Streamlit runtime
 
-UI 单测用 `httpx.MockTransport` 拦截外部 HTTP，验证 `EvalGateClient` 的请求路径 / 参数 / pydantic 解析 / 错误码，纯函数 helpers（百分比、latency 单位、axis 颜色、attribution 排序）单独测。**不启动 Streamlit runtime**——它没有可靠的 headless 渲染断言，集成测试回报不成比例。
+UI unit tests intercept outbound HTTP with `httpx.MockTransport`, checking `EvalGateClient` request paths / params / pydantic parsing / error codes. Pure helpers (percentages, latency units, axis colors, attribution sort) are tested separately. **Do not start the Streamlit runtime**—it has no reliable headless render assertions; integration tests would not pay for themselves.
 
-## 关键代码
+## Key code
 
 ```text
 src/evalgate/ui/
 ├── api_client.py           # EvalGateClient (httpx.Client) + EvalGateAPIError
-├── format.py               # 纯 helpers: humanize_latency / axis_status / sort_attribution
-├── layout.py               # 共享布局组件
-├── Home.py                 # landing（页面链接 + API health badge）
+├── format.py               # pure helpers: humanize_latency / axis_status / sort_attribution
+├── layout.py               # shared layout components
+├── Home.py                 # landing (page links + API health badge)
 └── pages/
     ├── 1_Traces.py
     ├── 2_Eval_Sets.py
@@ -94,13 +94,13 @@ src/evalgate/ui/
     └── 4_Generate_Trace.py
 ```
 
-`Generate Trace` 配套服务端：纯函数 trace 构造器 `src/evalgate/dev/trace_seeder.py`（`TraceSpec` / `SpanSpec` 模型 + `build_otlp_envelope` 构造 OTLP-JSON，零 IO、零 Streamlit 依赖）+ dev-only 路由 `src/evalgate/api/routers/dev.py`（`POST /v1/dev/seed-trace`，喂给已有的 `parse_otlp_json` + `persist_spans`）。服务端不真调 LLM，`prompt` / `mock_response` 只作为 span attribute 写入，保持 demo 离线幂等。
+`Generate Trace` server companions: pure-function trace builder `src/evalgate/dev/trace_seeder.py` (`TraceSpec` / `SpanSpec` models + `build_otlp_envelope` for OTLP-JSON, zero IO, zero Streamlit dependency) + dev-only router `src/evalgate/api/routers/dev.py` (`POST /v1/dev/seed-trace`, feeding existing `parse_otlp_json` + `persist_spans`). The server does not call an LLM; `prompt` / `mock_response` are written only as span attributes so the demo stays offline and idempotent.
 
-## 启动方式
+## How to start
 
 ```bash
-make db-up && make api-up   # 先起 DB + FastAPI
+make db-up && make api-up   # start DB + FastAPI first
 make ui                     # streamlit run src/evalgate/ui/Home.py --server.address 127.0.0.1
 ```
 
-依赖：`pyproject.toml` 主依赖加 `streamlit>=1.36`，`httpx` 由 dev 挪到主依赖。
+Dependencies: `streamlit>=1.36` added to main deps in `pyproject.toml`; `httpx` moved from dev to main.

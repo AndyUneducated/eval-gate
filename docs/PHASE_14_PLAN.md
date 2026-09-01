@@ -1,99 +1,99 @@
-# Phase 14 · Adversarial Case Synth（红队自动出题：用 LLM 主动构造攻击性测试）
+# Phase 14 · Adversarial Case Synth (red-team auto-generation: LLMs actively construct attack tests)
 
-## 核心思路
+## Core idea
 
-评测跑久了会"过拟合"已有 case：gate 一直绿，但弱点还在。红队（red-teaming，主动构造攻击性测试以暴露弱点）自动出题让评测自己进化——从 gate attribution 找出最弱的 tag，让 generator-LLM 针对它一次性合成 K 条"刁钻 case"（边界值 / 歧义指代 / prompt injection（提示注入，诱导模型违背系统指令）/ role confusion），落库时标记 `status=pending source=adversarial`，**runner 默认只读 active 的 case，所以这些生成的 case 绝不会自动溜进 gate**。人审 approve（→active）/ reject（→archived）后，被批准的 case 才进 eval set、参与下一轮评测。
+Long-running evals "overfit" the existing cases: the gate stays green while weaknesses remain. Red-teaming (actively constructing attack tests to expose weaknesses) lets the eval set evolve itself—take the weakest tag from gate attribution, have a generator-LLM synthesize K "hard cases" against it in one shot (boundary values / ambiguous reference / prompt injection / role confusion), persist them as `status=pending source=adversarial`. **The runner reads only `active` cases by default, so generated cases never slip into the gate automatically.** After human review approve (→active) / reject (→archived), approved cases enter the eval set and the next eval round.
 
-这就构成一个闭环飞轮（closed-loop flywheel，评测产生的信号驱动出题、出题又反哺评测的自我强化循环）：**评测 → 找弱点 → 自动出题 → 人审 → 再评测**。
+That is a closed-loop flywheel (eval signals drive generation, generation feeds back into eval): **eval → find weakness → auto-generate → human review → eval again**.
 
-## 闭环飞轮
+## Closed-loop flywheel
 
 ```mermaid
 flowchart TD
-  Run["evalgate run -> gate"] --> Attr["gate attribution<br/>找出最弱 tag"]
+  Run["evalgate run -> gate"] --> Attr["gate attribution<br/>find weakest tag"]
   Attr --> Gen["AdversarialSynth.synthesize(tag, exemplars, k)"]
-  Ex["该 tag 的 exemplar<br/>（按最近得分最低排序）"] --> Gen
-  Gen -->|"模板: boundary / ambiguity<br/>prompt_injection / role_confusion"| Cand["K 条 candidate dict（无 expected）"]
-  Cand --> Ins["repository.generate_into_set<br/>插入 status=pending source=adversarial + membership"]
+  Ex["exemplars for that tag<br/>(sorted by lowest recent score)"] --> Gen
+  Gen -->|"templates: boundary / ambiguity<br/>prompt_injection / role_confusion"| Cand["K candidate dicts (no expected)"]
+  Cand --> Ins["repository.generate_into_set<br/>insert status=pending source=adversarial + membership"]
   Ins --> Pend[("eval_cases status=pending")]
-  Pend --> Review["evalgate adversarial review（人审）"]
+  Pend --> Review["evalgate adversarial review (human)"]
   Review -->|approve| Active[("status=active")]
   Review -->|reject| Arch[("status=archived")]
   Active --> Run
   Active --> Stats["adversarial stats: hit = score < 0.5"]
 ```
 
-注入模板借用 [safety/jailbreak.py](../src/evalgate/safety/jailbreak.py) 的 `DEFAULT_JAILBREAK_KEYWORDS`，所以审入的注入 case 会让 gate 的 `jailbreak_*` 子轴回归——飞轮的"暴露弱点"效果**当场可见**。
+Injection templates reuse `DEFAULT_JAILBREAK_KEYWORDS` from [safety/jailbreak.py](../src/evalgate/safety/jailbreak.py), so approved injection cases regress the gate's `jailbreak_*` sub-axes—the flywheel's "expose weakness" effect is **visible immediately**.
 
-## case 生命周期状态机
+## Case lifecycle state machine
 
-单一真相落在 `EvalCaseRow` 的两列：`status`（控制"是否参与评测"）× `source`（记录来源）。**"pending 永不入 gate"这条安全不变量只靠 `list_cases` 默认 `statuses=("active",)` 实现**，不在 runner 里加任何特判。
+The single source of truth is two columns on `EvalCaseRow`: `status` (whether it participates in eval) × `source` (origin). **The safety invariant "pending never enters the gate" is implemented only by `list_cases` defaulting to `statuses=("active",)`**—no special case in the runner.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> pending: adversarial 生成
-  [*] --> active: manual / trace 直接入库
+  [*] --> pending: adversarial generate
+  [*] --> active: manual / trace insert
   pending --> active: review approve
   pending --> archived: review reject
-  active --> archived: 归档
+  active --> archived: archive
   note right of pending
     source ∈ trace / manual / adversarial
-    list_cases 默认只返回 active
-    -> pending / archived 自动被 runner & gate 排除
+    list_cases returns only active by default
+    -> pending / archived are automatically excluded by runner & gate
   end note
 ```
 
-`runner.py` 的 `iter_eval` 经 `list_cases` 读 case，因此**一行不改**就自动只看到 active；展示类路径（GET 详情 / CLI `show`）显式传 `statuses=None` 看全量。
+`runner.py` `iter_eval` reads cases via `list_cases`, so **zero runner changes** automatically see only active; display paths (GET detail / CLI `show`) pass `statuses=None` explicitly to see everything.
 
-## 技术选型与抉择
+## Technical choices
 
-> 取舍来源：ADR-011（case status/source 不变量沉到数据访问层、reference-free 对抗 case、hit 用绝对阈值）。
+> Trade-offs from ADR-011 (case status/source invariant lives in the data-access layer; reference-free adversarial cases; hit uses an absolute threshold).
 
-### 安全不变量放哪：runner 特判 vs 数据访问层
+### Where the safety invariant lives: runner special-case vs data-access layer
 
-"未经人审的 case 绝不能进 gate"——否则飞轮会自己污染自己。
+"Unreviewed cases must never enter the gate"—otherwise the flywheel pollutes itself.
 
-- **选定：沉到数据访问层。** 给 `EvalCaseRow` 加 `status` + `source` 两列，把 `eval_set.repository.list_cases` 重构成带 `statuses` 过滤、**默认 `("active",)`**。
-- **为什么不在 runner 里加判断：** 把规则放在数据最窄的入口，runner、未来的 sequential gate、任何走 `list_cases` 的消费方都自动获得保证，不会有人忘记加特判。
+- **Choice: sink it into the data-access layer.** Add `status` + `source` on `EvalCaseRow`; restructure `eval_set.repository.list_cases` with a `statuses` filter **defaulting to `("active",)`**.
+- **Why not a runner check:** put the rule at the narrowest data entrance so the runner, a future sequential gate, and any `list_cases` consumer get the guarantee automatically—nobody can forget a special-case.
 
-### 对抗 case 要不要生成 gold 答案
+### Should adversarial cases generate gold answers?
 
-- **选定：reference-free（无参考答案），只生成 `input`、不生成 gold `expected`。** judge 走已有的 reference-free pointwise 路径，零新代码。
-- **理由：** 红队的价值在"暴露弱点"而非"给标准答案"。若连 gold 一起生成，LLM 产的 gold 本身又得人审一遍（不可信），ROI 为负。
+- **Choice: reference-free—generate only `input`, never gold `expected`.** The judge uses the existing reference-free pointwise path; zero new code.
+- **Why:** red-team value is "expose weakness," not "supply a standard answer." Generating gold too means the LLM's gold itself needs review (untrustworthy)—negative ROI.
 
-### "命中"的定义：绝对阈值 vs 相对降幅
+### Definition of a "hit": absolute threshold vs relative drop
 
-- **选定：hit = candidate 最新得分 `< 0.5`（绝对阈值，`stats --threshold` 可调）。**
-- **为什么不用"相对某 baseline 降 ≥ X%"：** 相对降幅要先选一个"基线 run"，而基线选谁本身就是噪声源；绝对阈值跨 run 可比、一眼可解释（"低于 0.5 就算被难住"）。
-- **代价：** 0.5 是 magic number，且 mock judge 恒返 0.5 使 mock 下天然不触发——所以离线 smoke 的头号断言改用 **safety 轴回归**（审入的注入 case 给 candidate 引入攻击面），真 hit 留给真模式 + 单测。
+- **Choice: hit = candidate's latest score `< 0.5` (absolute threshold, tunable via `stats --threshold`).**
+- **Why not "relative drop ≥ X% vs some baseline":** a relative drop needs a "baseline run," and which run is baseline is itself a noise source; an absolute threshold is comparable across runs and immediately explainable ("below 0.5 means we were stumped").
+- **Cost:** 0.5 is a magic number, and the mock judge always returns 0.5 so mock never naturally triggers a hit—offline smoke's primary assertion therefore uses **safety-axis regression** (approved injection cases introduce attack surface for the candidate); true hits are left to real mode + unit tests.
 
-### 其余约定
+### Other conventions
 
-- **synth 永不抛错：** transport 失败或 JSON 解析失败 → 退化成更少（甚至 0）条 case，绝不打断飞轮。代价是"要 10 条可能只回 7 条"，调用方需容忍。mock 模式按模板确定性产 case，CI 全离线。
-- **generator 复用便宜模型：** `adversarial_generator_model` 默认 `ollama/qwen3.5:9b`（与 badcase finder 同款），env `EVALGATE_ADVERSARIAL_GENERATOR_MODEL` / CLI `--model` 可覆盖。
-- **直接重构 `list_cases` 签名、不做向后兼容：** 项目处于建设期，改签名比加并行函数干净，所有调用点已全量审过。
+- **synth never throws:** transport failure or JSON parse failure → degrade to fewer (even 0) cases, never interrupt the flywheel. Cost: "ask for 10, maybe get 7"; callers must tolerate that. Mock mode produces cases deterministically from templates; CI is fully offline.
+- **Generator reuses a cheap model:** `adversarial_generator_model` defaults to `ollama/qwen3.5:9b` (same as the badcase finder); override with env `EVALGATE_ADVERSARIAL_GENERATOR_MODEL` / CLI `--model`.
+- **Refactor `list_cases` signature in place, no backward-compat shim:** the project is still being built; a signature change is cleaner than a parallel function. All call sites were reviewed.
 
-## 关键代码
+## Key code
 
-- 数据模型：[core/schemas.py](../src/evalgate/core/schemas.py) 新增 `CaseStatus`（pending/active/archived）/ `CaseSource`（trace/manual/adversarial）枚举，`EvalCaseOut` 加 `status` + `source`；[db/models.py](../src/evalgate/db/models.py) `EvalCaseRow` 加两列（`status` 带索引），migration [`0013`](../src/evalgate/db/migrations/versions/0013_add_case_status_source.py) 加列 + 回填 `source='trace'`。
-- adversarial 包 [src/evalgate/adversarial/](../src/evalgate/adversarial/)：
-  - [`synth.py`](../src/evalgate/adversarial/synth.py) — 纯生成。`ADVERSARIAL_TEMPLATES`（四模板各带生成指令）；`synthesize(*, tag, exemplars, k, model, mock)` 拼 strict-JSON prompt 调 `acompletion_json`、容错解析、镜像 exemplar 的 input key；`GeneratedCase`（`input`/`template`/`rationale`/`tags`，无 `expected`）。
-  - [`repository.py`](../src/evalgate/adversarial/repository.py) — 持久化 + 生命周期。`generate_into_set`（取该 tag 最近得分最低的 exemplar → synth → 以 pending/adversarial 插入）/ `review_case`（approve→active，reject→archived）/ `list_pending` / `stats`（取最新 `eval_results.score`，hit = `< threshold`）。
-- 共享改动 [eval_set/repository.py](../src/evalgate/eval_set/repository.py)：`list_cases(..., statuses=("active",))`、`add_case` 加 `status`/`source` 入参、`add_case_from_trace` 传 `source=trace`。
-- REST [api/routers/adversarial.py](../src/evalgate/api/routers/adversarial.py)：生成 / 列 pending / review / stats 四端点。
-- CLI [cli.py](../src/evalgate/cli.py)：`evalgate adversarial generate | review | stats`。
+- Data model: [core/schemas.py](../src/evalgate/core/schemas.py) adds `CaseStatus` (pending/active/archived) / `CaseSource` (trace/manual/adversarial) enums; `EvalCaseOut` adds `status` + `source`; [db/models.py](../src/evalgate/db/models.py) `EvalCaseRow` adds two columns (`status` indexed); migration [`0013`](../src/evalgate/db/migrations/versions/0013_add_case_status_source.py) adds columns + backfills `source='trace'`.
+- Adversarial package [src/evalgate/adversarial/](../src/evalgate/adversarial/):
+  - [`synth.py`](../src/evalgate/adversarial/synth.py) — generation only. `ADVERSARIAL_TEMPLATES` (four templates, each with generation instructions); `synthesize(*, tag, exemplars, k, model, mock)` builds a strict-JSON prompt, calls `acompletion_json`, parses with tolerance, mirrors exemplar input keys; `GeneratedCase` (`input`/`template`/`rationale`/`tags`, no `expected`).
+  - [`repository.py`](../src/evalgate/adversarial/repository.py) — persistence + lifecycle. `generate_into_set` (lowest recent-score exemplars for the tag → synth → insert as pending/adversarial) / `review_case` (approve→active, reject→archived) / `list_pending` / `stats` (latest `eval_results.score`, hit = `< threshold`).
+- Shared change [eval_set/repository.py](../src/evalgate/eval_set/repository.py): `list_cases(..., statuses=("active",))`, `add_case` takes `status`/`source`, `add_case_from_trace` passes `source=trace`.
+- REST [api/routers/adversarial.py](../src/evalgate/api/routers/adversarial.py): generate / list pending / review / stats.
+- CLI [cli.py](../src/evalgate/cli.py): `evalgate adversarial generate | review | stats`.
 
-测试策略：以 repository 单测锁住核心不变量（**runner 视图排除 pending**、review 状态翻转、stats 命中率取最新结果），synth 单测覆盖 mock 确定性与坏 JSON 容错，端到端用离线 smoke 走完整 generate→排除→approve/reject→safety 回归飞轮。
+Test strategy: repository unit tests lock the core invariants (**runner view excludes pending**, review state flips, stats hit rate uses latest results); synth unit tests cover mock determinism and bad-JSON tolerance; e2e offline smoke walks the full generate→exclude→approve/reject→safety-regression flywheel.
 
-## 手动飞轮
+## Manual flywheel
 
 ```bash
-# 离线端到端：generate 10 -> 验证 pending 排除 -> approve 6 / reject 4 -> safety 轴回归 -> gate fail
+# offline e2e: generate 10 -> verify pending excluded -> approve 6 / reject 4 -> safety axis regression -> gate fail
 make adversarial-smoke
 
-# 手动走一轮
+# one manual round
 evalgate adversarial generate --set billing --tag billing --k 10 --mock
-evalgate adversarial review   --set billing                 # 列 pending
+evalgate adversarial review   --set billing                 # list pending
 evalgate adversarial review   --set billing --approve <case_id>
 evalgate adversarial stats    --set billing
 ```

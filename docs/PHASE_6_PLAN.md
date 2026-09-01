@@ -1,77 +1,77 @@
-# Phase 6 技术方案 · Judge Robustness（cross-vote + position-swap + self-consistency）
+# Phase 6 design · Judge Robustness (cross-vote + position-swap + self-consistency)
 
-> 路径以**当前代码**为准：runner 已从 `judge/runner.py` 移到 [src/evalgate/evaluator/runner.py](../src/evalgate/evaluator/runner.py)（Phase 8 引入 `EvaluatorRouter` 统一分派）；下文描述的 judge wrapper 嵌套拓扑本身不变。
+> Paths match **current code**: the runner moved from `judge/runner.py` to [src/evalgate/evaluator/runner.py](../src/evalgate/evaluator/runner.py) (Phase 8 introduced `EvaluatorRouter` for unified dispatch). The nested judge-wrapper topology described below is unchanged.
 
-## 一句话
+## In one sentence
 
-Phase 5 是「1 个 judge 给 1 条 case 打 1 次分」，方差大、且带已知 bias。Phase 6 把它升级成「**N 个 judge × A/B 互换 × K 次重打**」的聚合分数，并把每一次原始 judge 调用都落库（新表 `eval_judge_calls`），方便后面复盘 / 标定（Phase 16/17）。这是让 gate 的「显著性判定」不被 judge 噪声主导的前提（呼应 ADR-005）。
+Phase 5 was "1 judge scores 1 case once"—high variance and known bias. Phase 6 upgrades that to an aggregated score of **N judges × A/B swap × K repeats**, and persists every raw judge call (new table `eval_judge_calls`) for later recap / calibration (Phase 16/17). That is the prerequisite so the gate's significance test is not dominated by judge noise (ADR-005).
 
-## 三层去偏栈解决的三个问题
+## Three-layer debias stack: three problems
 
-| 偏差 / 噪声 | 含义 | 对应机制 |
+| Bias / noise | Meaning | Mechanism |
 |---|---|---|
-| variance（单次方差） | 同一 `(input, output)` 重打 K 次给不同分 | self-consistency |
-| position bias（位置偏好，A/B 比较时偏好某一侧） | pairwise judge 偏爱先读到的答案 | position-swap |
-| self-preference bias（自我偏好，模型偏爱同家族输出） | judge 偏爱与自己同源的模型输出 | cross-vote（跨模型投票） |
+| variance (single-shot) | Same `(input, output)` scored K times yields different scores | self-consistency |
+| position bias (preferring one side in A/B) | Pairwise judges prefer the answer they read first | position-swap |
+| self-preference bias (preferring same-family output) | Judge prefers outputs from models of its own family | cross-vote |
 
-## Judge wrapper 嵌套（外到内）
+## Nested judge wrappers (outer to inner)
 
-每条 case 的评分由四层 wrapper 包裹一个 leaf judge 构成，从外到内逐层「聚合 + 去偏」：
+Each case is scored by four wrappers around a leaf judge, aggregating and debiasing layer by layer:
 
 ```mermaid
 flowchart TB
-  Runner["evaluator/runner.py<br/>iter_eval (一条 case)"]
-  Multi["MultiJudge<br/>(cross-vote：聚合 N 个 sub-judge)"]
-  SC["SelfConsistencyJudge<br/>(K 次重打 → mean + confidence)"]
-  Swap["PositionSwapJudge<br/>(A/B 互换两次取一致)"]
-  Leaf["PointwiseJudge | PairwiseJudge<br/>(叶子：一次 litellm 调用)"]
+  Runner["evaluator/runner.py<br/>iter_eval (one case)"]
+  Multi["MultiJudge<br/>(cross-vote: aggregate N sub-judges)"]
+  SC["SelfConsistencyJudge<br/>(K repeats → mean + confidence)"]
+  Swap["PositionSwapJudge<br/>(A/B swap twice, require agreement)"]
+  Leaf["PointwiseJudge | PairwiseJudge<br/>(leaf: one litellm call)"]
 
   Runner --> Multi
   Multi -->|"for each sub-judge (N)"| SC
   SC -->|"K times"| Swap
-  Swap -->|"pairwise 时 2 次调用"| Leaf
+  Swap -->|"2 calls when pairwise"| Leaf
 ```
 
-- **pointwise 模式**：`SelfConsistencyJudge` 直接包 `PointwiseJudge`（无 PositionSwap 层，P=1）。
-- **pairwise 模式**：`SelfConsistencyJudge` 包 `PositionSwapJudge` 包 `PairwiseJudge`（P=2）。
+- **Pointwise mode**: `SelfConsistencyJudge` wraps `PointwiseJudge` directly (no PositionSwap layer, P=1).
+- **Pairwise mode**: `SelfConsistencyJudge` wraps `PositionSwapJudge` wraps `PairwiseJudge` (P=2).
 
-每条 case 的总调用次数：`N × K × P`（pointwise P=1；pairwise P=2）。默认 N=2、K=3、P=2 → **12 次/case**，可调。
+Total calls per case: `N × K × P` (pointwise P=1; pairwise P=2). Defaults N=2, K=3, P=2 → **12 calls/case**, tunable.
 
 ```mermaid
 flowchart LR
-  subgraph layer["每层的聚合产物"]
+  subgraph layer["Per-layer aggregate"]
     L1["PairwiseJudge<br/>winner: A|B|tie"]
     L2["PositionSwap<br/>score 0/0.5/1 + agreement"]
-    L3["SelfConsistency<br/>mean_score + confidence(由 std)"]
+    L3["SelfConsistency<br/>mean_score + confidence(from std)"]
     L4["MultiJudge<br/>score + confidence + votes"]
   end
   L1 --> L2 --> L3 --> L4
 ```
 
-## 各层职责
+## Layer responsibilities
 
-| 类 | 输入 | 输出 | 作用 |
+| Class | Input | Output | Role |
 |----|------|------|------|
-| `PointwiseJudge` | input, candidate_output | `score`, `reason` | 通用打分叶子（reference-free） |
-| `PairwiseJudge` | input, candidate, reference, position | `winner: A\|B\|tie`, `reason` | A/B 比较叶子，**只判胜负不出分** |
-| `PositionSwapJudge` | (同上) | `score` 0/0.5/1 + `agreement` | 去 position bias |
-| `SelfConsistencyJudge` | 包上述叶子 | `mean_score`, `confidence` | K 次重打，std → confidence |
-| `MultiJudge` | 包 N 个 SC | `score`, `confidence`, `votes` | cross-vote 聚合 |
+| `PointwiseJudge` | input, candidate_output | `score`, `reason` | Generic scoring leaf (reference-free) |
+| `PairwiseJudge` | input, candidate, reference, position | `winner: A\|B\|tie`, `reason` | A/B comparison leaf; **verdict only, no score** |
+| `PositionSwapJudge` | (same) | `score` 0/0.5/1 + `agreement` | Remove position bias |
+| `SelfConsistencyJudge` | wraps the above | `mean_score`, `confidence` | K repeats; std → confidence |
+| `MultiJudge` | wraps N SC judges | `score`, `confidence`, `votes` | Cross-vote aggregate |
 
-### 关键聚合规则（与代码一致）
+### Key aggregation rules (match the code)
 
-- **PositionSwap**（[position_swap.py](../src/evalgate/judge/position_swap.py)）：A/B 两个顺序都偏 candidate → `score=1.0, agreement=True`；都偏 reference → `0.0, True`；不一致 / 出现 tie / 解析失败 → `0.5, agreement=False`。即「只信两个顺序都同意的结论」。
-- **SelfConsistency**（[self_consistency.py](../src/evalgate/judge/self_consistency.py)）：`confidence = 1 - std / MAX_STD_SCORE_SPREAD`。K=1 退化为 `confidence=1.0`（单样本无方差信号，诚实地这么标）。K>1 时强制 `temperature=max(spec.temperature, 0.7)`，否则采样确定、self-consistency 无意义。
-- **MultiJudge**（[multi_judge.py](../src/evalgate/judge/multi_judge.py)）：`score = mean(各 sub-judge 的 mean)`；`confidence = (∏ 各 sub confidence) × (1 - cross_std/MAX_SPREAD)` —— 既要每个 judge 自己稳，又要 judge 之间彼此一致，才给高置信。
+- **PositionSwap** ([position_swap.py](../src/evalgate/judge/position_swap.py)): both A/B orders prefer candidate → `score=1.0, agreement=True`; both prefer reference → `0.0, True`; disagreement / tie / parse failure → `0.5, agreement=False`. Trust only conclusions both orders agree on.
+- **SelfConsistency** ([self_consistency.py](../src/evalgate/judge/self_consistency.py)): `confidence = 1 - std / MAX_STD_SCORE_SPREAD`. K=1 degrades to `confidence=1.0` (one sample has no variance signal; labeled honestly). For K>1, force `temperature=max(spec.temperature, 0.7)` or sampling is deterministic and self-consistency is meaningless.
+- **MultiJudge** ([multi_judge.py](../src/evalgate/judge/multi_judge.py)): `score = mean(each sub-judge mean)`; `confidence = (∏ each sub confidence) × (1 - cross_std/MAX_SPREAD)` — high confidence only if each judge is stable **and** judges agree with each other.
 
-## 1. prompt.yaml schema（breaking）
+## 1. prompt.yaml schema (breaking)
 
 ```yaml
 name: billing-multi-pairwise
 candidate:
   model: ollama/qwen2.5:7b
   user_template: "{prompt}"
-judges:                      # 复数，min_length=1
+judges:                      # plural, min_length=1
   - model: ollama/qwen2.5:7b
     rubric: |
       Rate 0..1 ... STRICT JSON {"score":..., "reason":...}
@@ -79,33 +79,33 @@ judges:                      # 复数，min_length=1
     rubric: |
       ...
 judge_policy:
-  mode: pairwise          # 必填：pointwise | pairwise
-  k: 3                    # self-consistency 次数
-  position_swap: true     # 仅 pairwise；false 用于对照实验
-  concurrency: 4          # 单 case 内并发上限
+  mode: pairwise          # required: pointwise | pairwise
+  k: 3                    # self-consistency repeats
+  position_swap: true     # pairwise only; false for ablation
+  concurrency: 4          # per-case concurrency cap
 ```
 
-校验在 [prompt_spec.py](../src/evalgate/judge/prompt_spec.py)：`PromptSpec` 只接受 `judges: list[JudgeSpec]` + `judge_policy: JudgePolicySpec`。旧单数 `judge:` → `ValidationError` 并附迁移示例。`build_judge_stack(spec)`（在 [multi_judge.py](../src/evalgate/judge/multi_judge.py)）按 `judge_policy.mode` 选 leaf、组装整个嵌套栈。
+Validation in [prompt_spec.py](../src/evalgate/judge/prompt_spec.py): `PromptSpec` only accepts `judges: list[JudgeSpec]` + `judge_policy: JudgePolicySpec`. Old singular `judge:` → `ValidationError` with a migration example. `build_judge_stack(spec)` (in [multi_judge.py](../src/evalgate/judge/multi_judge.py)) picks the leaf from `judge_policy.mode` and assembles the nested stack.
 
-pairwise 模式下 `judges[].rubric` v1 暂忽略（只用 `JudgeSpec.model`），因为 `PairwiseJudge` 用固定模板：
+In pairwise mode, `judges[].rubric` is ignored in v1 (only `JudgeSpec.model` is used) because `PairwiseJudge` uses a fixed template:
 
 ```text
 Compare Answer A and Answer B for the user question.
 Return STRICT JSON: {"winner": "A"|"B"|"tie", "reason": "..."}
 ```
 
-## 2. Judge 文件分布
+## 2. Judge file layout
 
-- [protocol.py](../src/evalgate/judge/protocol.py)：`JudgeCallRecord`、`LeafJudge` / `LeafVerdict` 协议、`_completion()` litellm 壳、`_parse_json_then_regex()`、`MAX_STD_SCORE_SPREAD` 常量
-- [pointwise.py](../src/evalgate/judge/pointwise.py)：`PointwiseJudge`、`PointwiseVerdict`
-- [pairwise.py](../src/evalgate/judge/pairwise.py)：`PairwiseJudge`、`PairwiseVerdict(winner, reason)`
-- [position_swap.py](../src/evalgate/judge/position_swap.py) / [self_consistency.py](../src/evalgate/judge/self_consistency.py) / [multi_judge.py](../src/evalgate/judge/multi_judge.py)：三个 wrapper
+- [protocol.py](../src/evalgate/judge/protocol.py): `JudgeCallRecord`, `LeafJudge` / `LeafVerdict` protocols, `_completion()` litellm shell, `_parse_json_then_regex()`, `MAX_STD_SCORE_SPREAD` constant
+- [pointwise.py](../src/evalgate/judge/pointwise.py): `PointwiseJudge`, `PointwiseVerdict`
+- [pairwise.py](../src/evalgate/judge/pairwise.py): `PairwiseJudge`, `PairwiseVerdict(winner, reason)`
+- [position_swap.py](../src/evalgate/judge/position_swap.py) / [self_consistency.py](../src/evalgate/judge/self_consistency.py) / [multi_judge.py](../src/evalgate/judge/multi_judge.py): the three wrappers
 
-> **为什么 PairwiseJudge 只出 `winner` 不出 `score`**：分数（0/0.5/1）是「两个位置顺序一致性」的产物，逻辑天然属于外层 `PositionSwapJudge`。叶子只回答「哪个更好」，由外层把「比较结果 + 去偏」翻译成分数 —— 职责清晰，去偏逻辑只有一份。
+> **Why PairwiseJudge emits `winner` and not `score`**: the 0/0.5/1 score is a product of "agreement across two position orders," which belongs in outer `PositionSwapJudge`. The leaf only answers "which is better"; the outer layer translates "comparison + debias" into a score—clear responsibilities, one copy of the debias logic.
 
-## 3. DB schema：新表 + 0005 migration
+## 3. DB schema: new table + 0005 migration
 
-[db/models.py](../src/evalgate/db/models.py) 加 per-call 明细表，**每次 judge 调用一行**：
+[db/models.py](../src/evalgate/db/models.py) adds a per-call detail table, **one row per judge call**:
 
 ```python
 class EvalJudgeCallRow(Base):
@@ -115,18 +115,18 @@ class EvalJudgeCallRow(Base):
     judge_model: str
     sub_run_index: int          # 0..K-1
     position: str | None        # "A_FIRST" | "B_FIRST" | None (pointwise)
-    score: float | None         # pointwise score 或 swap 后的 0/0.5/1
+    score: float | None         # pointwise score or swapped 0/0.5/1
     winner: str | None          # "A" | "B" | "tie" | None
     reason: str | None
     raw: JSONB | None
     created_at: timestamptz
 ```
 
-迁移 [0005_create_eval_judge_calls.py](../src/evalgate/db/migrations/versions/0005_create_eval_judge_calls.py)：PG 用 JSONB；索引 `ix_eval_judge_calls_eval_result_id`。`eval_results` **不发 migration** —— Phase 5 已预留 `judge_confidence` 和 `judge_raw`，Phase 6 真填。
+Migration [0005_create_eval_judge_calls.py](../src/evalgate/db/migrations/versions/0005_create_eval_judge_calls.py): JSONB on PG; index `ix_eval_judge_calls_eval_result_id`. **No migration on `eval_results`**—Phase 5 already reserved `judge_confidence` and `judge_raw`; Phase 6 actually fills them.
 
-## 4. 持久化 + Runner
+## 4. Persistence + Runner
 
-[judge/persistence.py](../src/evalgate/judge/persistence.py) 加 `add_judge_calls(...)` bulk insert。runner 单 case 内部：
+[judge/persistence.py](../src/evalgate/judge/persistence.py) adds `add_judge_calls(...)` bulk insert. Inside each case the runner:
 
 ```python
 agg = await judge_stack.score(case_input, candidate_text, reference=case.expected)
@@ -134,62 +134,62 @@ agg = await judge_stack.score(case_input, candidate_text, reference=case.expecte
 # add_judge_calls(result_id=row.id, calls=agg.raw_calls)
 ```
 
-`iter_eval` 对外的 `EvalRecord` 契约不变（向后兼容 gate）。**pairwise 模式缺 `expected`**：在 case 循环里检测，写 `EvalRecord(score=0.0, ..., error=True, error_kind="missing_reference")`，不调 judge stack —— fail-fast skip，不静默 fallback。
+`iter_eval`'s outward `EvalRecord` contract is unchanged (backward-compatible with the gate). **Pairwise mode missing `expected`**: detect in the case loop, write `EvalRecord(score=0.0, ..., error=True, error_kind="missing_reference")`, do not call the judge stack—fail-fast skip, no silent fallback.
 
-## 5. CLI（方差实验用）
+## 5. CLI (for variance experiments)
 
-`evalgate run` 扩三个覆盖参数：`--k N`、`--concurrency N`、`--policy-mode {pointwise,pairwise}`，方便复现实验脚本 [scripts/phase6_variance.py](../scripts/phase6_variance.py) 在 single / multi 配置间切换。
+`evalgate run` gains three overrides: `--k N`, `--concurrency N`, `--policy-mode {pointwise,pairwise}`, so the reproduction script [scripts/phase6_variance.py](../scripts/phase6_variance.py) can switch between single / multi configs.
 
-## 6. 复现实验：方差是否真降
+## 6. Reproduction experiment: did variance actually drop?
 
-这是 Phase 6 的「load-bearing」验证 —— 多层栈如果不能把跨次方差压下来，整个 ADR-005 就站不住脚。脚本对同一组 billing case，跑：
+This is Phase 6's load-bearing check—if the multi-layer stack cannot compress cross-run variance, ADR-005 does not hold. On the same billing cases the script runs:
 
-- `single_pointwise`（1 judge / K=1 / temp=0.7，**故意带噪**否则 stdev 平凡为 0）
-- `multi_pairwise`（2 judges 7B+32B / K=3 / swap on）
+- `single_pointwise` (1 judge / K=1 / temp=0.7, **intentionally noisy**; otherwise stdev is trivially 0)
+- `multi_pairwise` (2 judges 7B+32B / K=3 / swap on)
 
-各跑多次，算 case-wise score stdev across runs 取均值。实测：
+Each config is run multiple times; mean of case-wise score stdev across runs:
 
 | Config | Mean per-case score stdev |
 |---|---|
 | single_pointwise | **0.0377** |
 | multi_pairwise | **0.0136** |
 
-多层栈把跨次评分波动压到 ~1/2.8，方向上验证了核心收益。
+The stack compressed cross-run score fluctuation to ~1/2.8, confirming the core benefit in direction.
 
-## 技术选型与抉择
+## Technical choices
 
-### 1. 三层去偏栈 vs 单 judge（对应 ADR-005）
+### 1. Three-layer debias stack vs a single judge (ADR-005)
 
-- **决策**：用 `MultiJudge → SelfConsistency → PositionSwap → leaf` 的嵌套栈，分别对治 self-preference / variance / position 三类问题。
-- **备选**：继续用 Phase 5 的单 judge 单次调用；或只做其中一层（如只 self-consistency）。
-- **为什么**：单 judge 的方差（±15%）和 bias 是论文与工业界共识（Zheng 2023 MT-Bench）。不修方差，gate 的「显著性判定」会被 judge 噪声主导 —— 92%→89% 究竟是真回归还是噪声分不清，gate 就会误 block，进而被团队绕过（ADR-004 最想避免的失败模式）。三类问题各有针对机制，故三层并存。
-- **代价**：**评测成本 ×6-10**（N×K×P）。这是有意识接受的代价 —— CI gate 的「可信度」是产品根本；生产可加 caching / sampling 把成本压回 ×2-3。复杂度也上升（多了几层抽象类），故必须有复现实验脚本兜底证明方差真的降了。
+- **Decision**: nested `MultiJudge → SelfConsistency → PositionSwap → leaf`, each targeting self-preference / variance / position.
+- **Alternative**: keep Phase 5's single judge, single call; or only one layer (e.g. self-consistency only).
+- **Why**: single-judge variance (±15%) and bias are consensus in papers and industry (Zheng 2023 MT-Bench). Unfixed variance lets judge noise dominate the gate's significance test—92%→89% cannot be told apart from noise, the gate false-blocks, and teams bypass it (the failure mode ADR-004 most wants to avoid). Each problem has a dedicated mechanism, so all three layers stay.
+- **Cost**: **eval cost ×6–10** (N×K×P). Accepted on purpose—CI-gate credibility is the product. Production can add caching / sampling to bring cost back to ×2–3. Complexity also rises (more wrapper classes), so a reproduction script must prove variance actually dropped.
 
-### 2. wrapper 嵌套（组合）而非单个大 judge 类
+### 2. Nested wrappers (composition) rather than one large judge class
 
-- **决策**：每层是一个独立的小 wrapper，靠组合（composition）叠成栈，`build_judge_stack` 根据 policy 拼装。
-- **备选**：一个 `RobustJudge` 大类，内部 if/else 处理 K / swap / multi。
-- **为什么**：每层职责单一、可单独单测（PositionSwap 的一致性规则、SelfConsistency 的 std→confidence 公式都能孤立验证）；pointwise / pairwise 只是「换叶子 + 是否插 PositionSwap 层」，组合天然支持。
-- **代价**：层数多，初读要理解嵌套关系（故本文给了拓扑图）。
+- **Decision**: each layer is a small independent wrapper; composition builds the stack; `build_judge_stack` assembles from policy.
+- **Alternative**: one `RobustJudge` class with if/else for K / swap / multi.
+- **Why**: single responsibility per layer, independently unit-testable (PositionSwap agreement rules, SelfConsistency std→confidence). Pointwise / pairwise is "swap the leaf + optionally insert PositionSwap"—composition supports that naturally.
+- **Cost**: more layers; first readers need the topology (hence the diagrams in this doc).
 
-### 3. cross-vote 用 size diversity（7B + 32B）顶 family diversity
+### 3. Cross-vote via size diversity (7B + 32B) standing in for family diversity
 
-- **决策**：本机只有 qwen 家族，用 `qwen2.5:7b` + `qwen2.5:32b` 做 size 多样性近似 cross-vote。
-- **备选**：跨家族（GPT-4 + Claude）才是去 self-preference bias 的正解。
-- **为什么**：本地零成本能跑通完整拓扑、验证方差收益；cross-family 是 LiteLLM（ADR-008）已支撑的能力，换 model 名即可，生产环境直接配跨家族 judge。
-- **代价**：本地 demo 演不出真正的 self-preference 去偏效果（同家族无法体现），这部分依赖云模型 / 后续 κ 实验补足。
+- **Decision**: locally we only have the Qwen family, so `qwen2.5:7b` + `qwen2.5:32b` approximate cross-vote via size diversity.
+- **Alternative**: cross-family (GPT-4 + Claude) is the real fix for self-preference bias.
+- **Why**: local, zero-cost run of the full topology and variance benefit; cross-family is already supported by LiteLLM (ADR-008)—change model names. Production just configures cross-family judges.
+- **Cost**: the local demo cannot show true self-preference debiasing (same family cannot exhibit it); that waits on cloud models / later κ experiments.
 
-### 4. 每次调用落明细表 `eval_judge_calls`
+### 4. Persist every call in `eval_judge_calls`
 
-- **决策**：per-call 一行存全量（含 raw response），而不只存聚合分数。
-- **为什么**：Phase 16 校准、Phase 17 Cohen's κ 都要回看「每一次原始 judge 怎么打的」。存明细让这些后续 phase 直接查表，**不必重跑昂贵的 judge**。
-- **代价**：明细表行数 = 结果数 × N×K×P，存储放大；可接受（文本量小，且 JSONB 压缩）。
+- **Decision**: one row per call with the full payload (including raw response), not just the aggregate score.
+- **Why**: Phase 16 calibration and Phase 17 Cohen's κ both need "how each raw judge scored." Detail rows let those phases query the table **without re-running expensive judges**.
+- **Cost**: row count = results × N×K×P; storage blow-up is acceptable (small text, JSONB compresses).
 
-## 测试策略
+## Test strategy
 
-aiosqlite + `mock_response`，CI 不真调。各 wrapper 单独单测其聚合 / 去偏规则（position-swap 一致/冲突、self-consistency 的 K=3 同分→conf=1 与高方差→低 conf、multi-judge 聚合）。**结构不变量**：跑一条 case 后 `eval_judge_calls` 行数恰为 `N×K×P`；端到端断言 records 与 DB 一致。真实方差数字由复现实验脚本在本机 Ollama 真调产出。
+aiosqlite + `mock_response`; CI never calls a real model. Each wrapper is unit-tested for its aggregate / debias rules (position-swap agree/conflict, self-consistency K=3 same scores → conf=1 vs high variance → low conf, multi-judge aggregate). **Structural invariant**: after one case, `eval_judge_calls` row count is exactly `N×K×P`; end-to-end asserts records match the DB. Real variance numbers come from the reproduction script against local Ollama.
 
 ## Forward-compat
 
-- **Phase 7（BadCase Finder）**：`judge_confidence` 现在有真信号 → 可做 uncertainty sampling（按不确定度排序找疑难 case）。
-- **Phase 16（Calibration）/ Phase 17（κ 实验）**：直接查 `eval_judge_calls` + 人工标注 join，不重跑 judge。
+- **Phase 7 (BadCase Finder)**: `judge_confidence` now has a real signal → uncertainty sampling (rank hard cases by uncertainty).
+- **Phase 16 (Calibration) / Phase 17 (κ experiment)**: query `eval_judge_calls` joined to human labels; do not re-run judges.
